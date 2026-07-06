@@ -1,0 +1,7 @@
+/.direnv/
+/bin/
+/build/
+/dist/
+common.mk
+*.test
+coverprofile
