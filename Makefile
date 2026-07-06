@@ -8,18 +8,18 @@ common.mk:
 APIGEN ?= $(LOCALGOBIN)/apigen
 
 KCP ?= $(LOCALBIN)/kcp
-KCP_VERSION ?= 0.30.0
+KCP_VERSION ?= 0.32.3
 
 IMG_REGISTRY ?= ghcr.io/opendefense
 IMG_TAG ?= latest
-CONTROLLER_IMG ?= $(IMG_REGISTRY)/access-operator:$(IMG_TAG)
+CONTROLLER_IMG ?= $(IMG_REGISTRY)/krop-controller:$(IMG_TAG)
 
 TIMESTAMP := $(shell date '+%Y%m%d%H%M%S')
 DEV_TAG ?= dev.$(TIMESTAMP)
 export DEV_TAG
 
 LICENSE := apache
-LICENSE_COMMENT := BWI GmbH and Access Operator contributors
+LICENSE_COMMENT := opendefense contributors
 
 ##@ Development
 
@@ -28,20 +28,9 @@ generate: $(CONTROLLER_GEN) ## Generate deepcopy methods.
 	$(CONTROLLER_GEN) object paths="./api/..."
 
 .PHONY: manifests
-manifests: $(CONTROLLER_GEN) $(APIGEN) ## Generate CRDs and convert to kcp APIResourceSchemas + APIExport.
+manifests: $(CONTROLLER_GEN) $(APIGEN) ## Generate the engine CRD and convert to kcp APIResourceSchemas + APIExport.
 	$(CONTROLLER_GEN) crd paths="./api/..." output:crd:dir=config/crds
 	$(APIGEN) --input-dir=config/crds --output-dir=config/kcp
-	$(MAKE) kcp-drop-compiled
-	$(MAKE) kcp-permissionclaims
-
-.PHONY: kcp-permissionclaims
-kcp-permissionclaims: ## Re-inject hand-maintained APIExport permissionClaims (apigen does not emit them). See config/kcp/README.md.
-	$(YQ) -i '.spec.permissionClaims = load("config/kcp/patches/permissionclaims.yaml")' config/kcp/apiexport-access.opendefense.cloud.yaml
-
-.PHONY: kcp-drop-compiled
-kcp-drop-compiled: ## Remove Compiled* from the APIExport (they are plain CRDs on the output cluster, never served via a workspace).
-	$(YQ) -i 'del(.spec.resources[] | select(.name | test("^compiled")))' config/kcp/apiexport-access.opendefense.cloud.yaml
-	rm -f config/kcp/apiresourceschema-*compiled*.yaml
 
 .PHONY: fmt
 fmt: $(ADDLICENSE) $(GOLANGCI_LINT) ## Add license headers and format code.
@@ -64,7 +53,7 @@ vet: ## Run go vet.
 
 .PHONY: build
 build: generate ## Build the controller binary.
-	$(GO) build -o $(LOCALBIN)/access-operator ./cmd/controller/
+	$(GO) build -o $(LOCALBIN)/krop-controller ./cmd/controller/
 
 .PHONY: run
 run-controller: generate ## Run the controller from source.
@@ -74,7 +63,7 @@ run-controller: generate ## Run the controller from source.
 docker-build: ## Build the Docker image (native single-arch; multi-arch is the CI pipeline's job).
 	$(DOCKER) build -t $(CONTROLLER_IMG) .
 
-KCP_CONTROLLER_IMG ?= $(IMG_REGISTRY)/access-operator-kcp:$(IMG_TAG)
+KCP_CONTROLLER_IMG ?= $(IMG_REGISTRY)/krop-controller-kcp:$(IMG_TAG)
 
 .PHONY: docker-build-kcp
 docker-build-kcp: ## Build the kcp-mode Docker image (cmd/controller).
