@@ -121,10 +121,11 @@ is the one milestone that could slide earlier or run in parallel — runtime-fir
 Each milestone is its own later spec → plan → implement cycle.
 
 ### M0 — Scaffold + kro-embedding spike (de-risk; throwaway spike code)
-- Repo skeleton (`api/ cmd/ internal/ config/ test/`); pin deps. **kro `v0.9.2` drives the base set:
-  it transitively pins k8s `v0.35.0`, cel-go `v0.27.0`, controller-runtime `v0.23.1` — kept as-is (do
-  not force-bump; see M0 findings). kcp sdk `v0.32`, multicluster-provider `v0.8`,
-  multicluster-runtime land in M1, at which point the whole set is re-resolved together.** Adapt the copied
+- Repo skeleton (`api/ cmd/ internal/ config/ test/`); pin deps. **Reconciled set (verified building
+  together): kro `v0.9.2`, k8s `v0.36.2`, controller-runtime `v0.24.1`, cel-go `v0.28.0`, kcp sdk
+  `v0.32.2`, multicluster-provider `v0.8.0`, multicluster-runtime `v0.24.1`, logicalcluster `v3.0.5`.
+  The kcp/multicluster stack's higher k8s/ctrl-runtime won and kro v0.9.2 compiles + passes its spike
+  tests against them — no compromise, no `replace`.** Adapt the copied
   Makefile (strip the hardcoded `access.opendefense.cloud` APIExport wiring + `access-operator` image
   names; rename to `krop-controller`).
 - **Spike:** confirm `runtime.FromGraph` + `Node.GetDesired/SetObserved` is genuinely client-free with
