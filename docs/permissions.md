@@ -74,6 +74,16 @@ Everything the controller does in the provider workspace it does as
   - Scoping note: the export name is derived from the blueprint at runtime, so
     the `apiexports` rule is left unscoped for a fresh install. Once export
     names are known, tighten with `resourceNames`.
+- **`apis.kcp.io/apiexports/content`** — the Supervisor serves instances
+  **through** the published APIExport's virtual workspace (the apiexport
+  multicluster provider connects to the endpoint-slice URL and reconciles the
+  instance kind across every bound consumer). kcp's apiexport virtual-workspace
+  authorizer gates that access on the request verb applied to the
+  `apiexports/content` subresource **in the export's own workspace** — so without
+  this grant the provider's endpoint watcher fails discovery with `access denied`
+  and the instance-serving path never engages any consumer cluster. This gap is
+  invisible to envtest (which connects as admin) and is surfaced only by the
+  deployed-pod e2e running under the least-privilege SA identity.
 - **Provider-target children (DEPLOYMENT-SPECIFIC)** — children whose template
   carries `krop.opendefense.cloud/target: provider` are written into the
   provider workspace by the engine's `ProviderClient`

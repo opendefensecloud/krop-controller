@@ -69,6 +69,21 @@ rules:
   - apiGroups: ["apis.kcp.io"]
     resources: ["apiexports"]
     verbs: ["create", "get", "list", "watch", "update", "patch"]
+  # The Supervisor serves instances THROUGH the published APIExport's virtual
+  # workspace (the apiexport multicluster provider connects to the endpoint-slice
+  # URL and reconciles the instance kind across every bound consumer). kcp's
+  # apiexport virtual-workspace authorizer gates that access on the verb applied
+  # to the `apiexports/content` subresource in THIS (the export's) workspace — so
+  # without this grant the provider's endpoint watcher fails discovery with
+  # "access denied" and the instance-serving path never engages any consumer
+  # cluster. (This gap is invisible to envtest, which connects as admin; it is
+  # exposed only by the deployed-pod e2e running under the least-privilege SA
+  # identity.) The verbs mirror what flows through the vw: discovery + informers
+  # (get/list/watch) and the instance/child writes (create/update/patch/delete).
+  # Can be name-scoped with `resourceNames: [<export-name>]` once known.
+  - apiGroups: ["apis.kcp.io"]
+    resources: ["apiexports/content"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # --- PROVIDER-TARGET children (DEPLOYMENT-SPECIFIC) ----------------------
   # The engine writes provider-target children (annotation

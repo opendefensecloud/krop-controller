@@ -52,6 +52,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -236,7 +237,17 @@ func run() error {
 			return fmt.Errorf("constructing apiexport provider for %q: %w", exportName, err)
 		}
 
-		imgr, err := mcmanager.New(cfg, provider, manager.Options{Scheme: instanceScheme})
+		// Disable the instance manager's metrics server: the provider manager
+		// already binds the default metrics port (:8080), and there is one
+		// instance manager PER published blueprint — if they all defaulted to
+		// :8080 every one after the first would fail to bind, its Start would
+		// return an error the Supervisor swallows, and the instance-serving path
+		// would silently die (surfaced by the full-stack deployment e2e). The
+		// instance managers expose no metrics of their own, so disable it.
+		imgr, err := mcmanager.New(cfg, provider, manager.Options{
+			Scheme:  instanceScheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
+		})
 		if err != nil {
 			return fmt.Errorf("setting up instance manager for %q: %w", exportName, err)
 		}
