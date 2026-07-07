@@ -85,6 +85,67 @@ func TestReconcile_AddsFinalizerBeforeApply(t *testing.T) {
 	}
 }
 
+// mkLabeledCM returns a ConfigMap carrying the instance-uid GC label.
+func mkLabeledCM(name, uid string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
+	u.SetName(name)
+	u.SetNamespace("default")
+	u.SetLabels(map[string]string{kropengine.LabelInstanceUID: uid})
+
+	return u
+}
+
+// graphWithConfigMapNode builds a minimal graph whose single node is a
+// consumer-target ConfigMap, so childGVKs(TargetConsumer) returns {v1 ConfigMap}.
+func graphWithConfigMapNode() *krograph.Graph {
+	tmpl := &unstructured.Unstructured{}
+	tmpl.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
+	// Consumer is the default target (no routing annotation), matching TargetOf.
+	return &krograph.Graph{Nodes: map[string]*krograph.Node{
+		"config": {Template: tmpl},
+	}}
+}
+
+func TestPruneChildren_DeletesStaleKeepsApplied(t *testing.T) {
+	const uid = "uid-1"
+	desired := mkLabeledCM("desired-child", uid)
+	stale := mkLabeledCM("stale-child", uid)
+	consumer := fake.NewClientBuilder().WithObjects(desired, stale).Build()
+
+	r := &Reconciler{
+		Graph:          graphWithConfigMapNode(),
+		ProviderClient: consumer, // provider target has no child GVKs here → no-op
+		InstanceGVK:    testGVK,
+		BlueprintName:  "bp",
+	}
+
+	// Applied set contains only the desired child; stale-child is absent → prune.
+	applied := map[kropengine.Target][]kropengine.ChildID{
+		kropengine.TargetConsumer: {{
+			GVK:       schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"},
+			Namespace: "default", Name: "desired-child",
+		}},
+	}
+	if err := r.pruneChildren(context.Background(), consumer, uid, applied); err != nil {
+		t.Fatalf("pruneChildren: %v", err)
+	}
+
+	// stale-child must be gone.
+	got := &unstructured.Unstructured{}
+	got.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
+	err := consumer.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "stale-child"}, got)
+	if err == nil {
+		t.Fatal("stale-child was not pruned")
+	}
+	// desired-child must remain.
+	got = &unstructured.Unstructured{}
+	got.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
+	if err := consumer.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "desired-child"}, got); err != nil {
+		t.Fatalf("desired-child was wrongly pruned: %v", err)
+	}
+}
+
 func TestReconcile_DeletionRemovesFinalizer_EmptyGraph(t *testing.T) {
 	inst := mkInstance("demo", true, kropengine.Finalizer)
 	consumer := fake.NewClientBuilder().WithObjects(inst).Build()

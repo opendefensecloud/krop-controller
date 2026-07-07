@@ -90,11 +90,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 
 	instanceName := inst.GetName()
 	labels := kropengine.GCLabels(string(inst.GetUID()), clusterName, r.BlueprintName)
+
+	// Per-target sinks record the final identity of every applied child so a
+	// complete pass can prune labeled children no longer in the desired set.
+	// RecordingApplier is the INNERMOST decorator (wrapping SSA) so it observes
+	// the object AFTER QualifyingApplier's rename and LabelingApplier's labels.
+	var appliedConsumer, appliedProvider []kropengine.ChildID
 	appliers := map[kropengine.Target]kropengine.Applier{
 		kropengine.TargetConsumer: kropengine.NewLabelingApplier(
-			kropengine.NewOwnerRefApplier(kropengine.NewSSAApplier(consumerClient), inst), labels),
+			kropengine.NewOwnerRefApplier(
+				kropengine.NewRecordingApplier(kropengine.NewSSAApplier(consumerClient), &appliedConsumer), inst), labels),
 		kropengine.TargetProvider: kropengine.NewLabelingApplier(
-			kropengine.NewQualifyingApplier(kropengine.NewSSAApplier(r.ProviderClient),
+			kropengine.NewQualifyingApplier(
+				kropengine.NewRecordingApplier(kropengine.NewSSAApplier(r.ProviderClient), &appliedProvider),
 				func(orig string) string { return kropengine.ProviderChildName(clusterName, instanceName, orig) }),
 			labels),
 	}
@@ -102,6 +110,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	res, err := kropengine.New().Reconcile(ctx, rt, appliers)
 	if err != nil {
 		return res, err
+	}
+
+	// Prune ONLY after a complete pass: an incomplete (pending-dependency) pass
+	// applies just a prefix of the desired set, so pruning then would delete
+	// still-desired children it simply had not re-applied yet. The deletion path
+	// (above) already GCs everything, so skip prune when the instance is deleting.
+	if res.Complete && inst.GetDeletionTimestamp() == nil {
+		if err := r.pruneChildren(ctx, consumerClient, string(inst.GetUID()), map[kropengine.Target][]kropengine.ChildID{
+			kropengine.TargetConsumer: appliedConsumer,
+			kropengine.TargetProvider: appliedProvider,
+		}); err != nil {
+			return res, err
+		}
 	}
 
 	if desired, perr := kropengine.ProjectStatus(rt); perr == nil {
@@ -132,6 +153,44 @@ func (r *Reconciler) deleteChildren(ctx context.Context, consumerClient client.C
 			for i := range list.Items {
 				if err := cl.Delete(ctx, &list.Items[i]); client.IgnoreNotFound(err) != nil {
 					return fmt.Errorf("deleting %s %s: %w", gvk.Kind, list.Items[i].GetName(), err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// pruneChildren deletes instance-labeled children that are NOT in the just-
+// applied set, for each target and each of that target's child GVKs. This
+// reclaims forEach-shrunk items, includeWhen-excluded children, and (after a
+// graph change) children of dropped blueprint nodes. It must run ONLY after a
+// complete apply pass (see the res.Complete guard at the call site), else a
+// pending pass's partial applied set would delete still-desired children.
+func (r *Reconciler) pruneChildren(ctx context.Context, consumerClient client.Client, instanceUID string, applied map[kropengine.Target][]kropengine.ChildID) error {
+	sel := client.MatchingLabels{kropengine.LabelInstanceUID: instanceUID}
+	for target, cl := range map[kropengine.Target]client.Client{
+		kropengine.TargetConsumer: consumerClient,
+		kropengine.TargetProvider: r.ProviderClient,
+	} {
+		keep := make(map[kropengine.ChildID]bool, len(applied[target]))
+		for _, id := range applied[target] {
+			keep[id] = true
+		}
+		for _, gvk := range r.childGVKs(target) {
+			list := &unstructured.UnstructuredList{}
+			list.SetGroupVersionKind(gvk)
+			if err := cl.List(ctx, list, sel); err != nil {
+				return fmt.Errorf("listing %s children for prune: %w", gvk.Kind, err)
+			}
+			for i := range list.Items {
+				item := &list.Items[i]
+				id := kropengine.ChildID{GVK: gvk, Namespace: item.GetNamespace(), Name: item.GetName()}
+				if keep[id] {
+					continue
+				}
+				if err := cl.Delete(ctx, item); client.IgnoreNotFound(err) != nil {
+					return fmt.Errorf("pruning %s %s: %w", gvk.Kind, item.GetName(), err)
 				}
 			}
 		}
