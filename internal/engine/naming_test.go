@@ -44,6 +44,17 @@ func TestProviderChildName_CollisionFreeAcrossInstances(t *testing.T) {
 	}
 }
 
+func TestProviderChildName_InjectiveOnHyphenBoundary(t *testing.T) {
+	// The readable hyphen-joined prefix is identical ("a-b-c-d") for both tuples
+	// because instance names may contain hyphens, but the tuples differ, so the
+	// derived names must differ (strict injectivity via the tuple hash).
+	a := ProviderChildName("a", "b-c", "d")
+	b := ProviderChildName("a-b", "c", "d")
+	if a == b {
+		t.Fatalf("distinct tuples with identical readable prefix collided, both %q", a)
+	}
+}
+
 func TestProviderChildName_LongInputStaysDNSSafe(t *testing.T) {
 	long := strings.Repeat("a", 300)
 	got := ProviderChildName(long, long, long)
