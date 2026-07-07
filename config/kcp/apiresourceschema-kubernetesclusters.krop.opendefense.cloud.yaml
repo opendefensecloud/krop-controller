@@ -55,3 +55,26 @@ spec:
                 agentToken is the token resolved from the provider-target
                 AgentRequest's status, propagated cross-target into the instance.
               type: string
+            conditions:
+              description: |-
+                conditions surface the engine Result (Ready / Progressing) so a
+                consumer can tell a converging instance from a wedged one. This
+                mirrors the conditions array kro's SynthesizeCRD auto-generates for
+                the instance status; it MUST stay in the served schema or kcp prunes
+                the conditions the reconciler writes.
+              type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  status:
+                    type: string
+                  reason:
+                    type: string
+                  message:
+                    type: string
+                  lastTransitionTime:
+                    type: string
+                  observedGeneration:
+                    type: integer

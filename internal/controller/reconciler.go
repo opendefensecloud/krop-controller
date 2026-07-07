@@ -26,11 +26,27 @@ import (
 	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	kroruntime "github.com/kubernetes-sigs/kro/pkg/runtime"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
+)
+
+// Instance status condition types and reasons projected from the engine Result.
+const (
+	// conditionReady is True when every included node passed readiness.
+	conditionReady = "Ready"
+	// conditionProgressing is True while the instance is still converging
+	// (a dependency is pending or a child is not yet ready).
+	conditionProgressing = "Progressing"
+
+	reasonReady       = "Ready"
+	reasonProgressing = "Progressing"
+	reasonReconciled  = "Reconciled"
 )
 
 // defaultRecordNamespace is the provider-workspace namespace holding liveness
@@ -179,14 +195,89 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	// covers the fully-ready complete pass so the heartbeat never stops.
 	res.Requeue = true
 
+	// Read the persisted conditions BEFORE projecting the CEL status: SetNestedMap
+	// below REPLACES the whole status object, which would otherwise drop the
+	// conditions (and reset their lastTransitionTime) every pass.
+	conditions := readConditions(inst)
+
 	if desired, perr := kropengine.ProjectStatus(rt); perr == nil {
 		if status, found, _ := unstructured.NestedMap(desired.Object, "status"); found {
 			_ = unstructured.SetNestedMap(inst.Object, status, "status")
-			_ = consumerClient.Status().Update(ctx, inst)
 		}
 	}
 
+	// Surface the engine Result as Ready/Progressing conditions so consumers can
+	// tell a converging instance from a wedged one. kro's SynthesizeCRD generates
+	// status.conditions into the served instance schema (statusFieldsOverride=true
+	// in kro's graph builder), so these persist through kcp's schema pruning.
+	applyResultConditions(&conditions, res, inst.GetGeneration())
+	_ = writeConditions(inst, conditions)
+	_ = consumerClient.Status().Update(ctx, inst)
+
 	return res, nil
+}
+
+// applyResultConditions updates the Ready and Progressing conditions in place
+// from the engine Result. Ready is True only when every node passed readiness;
+// Progressing is True while the instance is still converging.
+func applyResultConditions(conditions *[]metav1.Condition, res kropengine.Result, generation int64) {
+	ready := metav1.Condition{Type: conditionReady, ObservedGeneration: generation}
+	progressing := metav1.Condition{Type: conditionProgressing, ObservedGeneration: generation}
+	if res.Ready {
+		ready.Status = metav1.ConditionTrue
+		ready.Reason = reasonReady
+		ready.Message = "all resources are ready"
+		progressing.Status = metav1.ConditionFalse
+		progressing.Reason = reasonReconciled
+		progressing.Message = "reconcile complete"
+	} else {
+		ready.Status = metav1.ConditionFalse
+		ready.Reason = reasonProgressing
+		ready.Message = "waiting for resources to become ready"
+		progressing.Status = metav1.ConditionTrue
+		progressing.Reason = reasonProgressing
+		progressing.Message = "reconcile in progress"
+	}
+	meta.SetStatusCondition(conditions, ready)
+	meta.SetStatusCondition(conditions, progressing)
+}
+
+// readConditions extracts the instance's status.conditions as typed
+// metav1.Conditions. A missing or malformed slice yields nil (a fresh start).
+func readConditions(inst *unstructured.Unstructured) []metav1.Condition {
+	raw, found, err := unstructured.NestedSlice(inst.Object, "status", "conditions")
+	if !found || err != nil {
+		return nil
+	}
+	out := make([]metav1.Condition, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		var c metav1.Condition
+		if cerr := k8sruntime.DefaultUnstructuredConverter.FromUnstructured(m, &c); cerr != nil {
+			continue
+		}
+		out = append(out, c)
+	}
+
+	return out
+}
+
+// writeConditions writes the typed conditions back into the instance's
+// status.conditions as unstructured maps.
+func writeConditions(inst *unstructured.Unstructured, conditions []metav1.Condition) error {
+	raw := make([]any, 0, len(conditions))
+	for i := range conditions {
+		m, err := k8sruntime.DefaultUnstructuredConverter.ToUnstructured(&conditions[i])
+		if err != nil {
+			return fmt.Errorf("encoding condition: %w", err)
+		}
+		raw = append(raw, m)
+	}
+
+	return unstructured.SetNestedSlice(inst.Object, raw, "status", "conditions")
 }
 
 // deleteChildren deletes all children of the instance (by the instance-uid

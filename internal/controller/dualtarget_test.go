@@ -302,5 +302,25 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 
 			return tok == "tok-xyz789", "status.agentToken=" + tok
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "instance status.agentToken not mapped")
+
+		// I2: the reconciler projects the engine Result as a Ready condition. This
+		// persists only if status.conditions is in the served schema (kcp prunes
+		// otherwise — the M3 agentToken bug). Asserting it here proves the served
+		// ARS carries conditions end-to-end, not just the in-memory set.
+		envtest.Eventually(GinkgoT(), func() (bool, string) {
+			got := &unstructured.Unstructured{}
+			got.SetGroupVersionKind(instance.GroupVersionKind())
+			if err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "demo"}, got); err != nil {
+				return false, err.Error()
+			}
+			conds, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+			for _, c := range conds {
+				if cm, ok := c.(map[string]any); ok && cm["type"] == "Ready" {
+					return true, ""
+				}
+			}
+
+			return false, "no Ready condition on instance status"
+		}, wait.ForeverTestTimeout, 200*time.Millisecond, "instance Ready condition not persisted (served schema pruned status.conditions?)")
 	})
 })
