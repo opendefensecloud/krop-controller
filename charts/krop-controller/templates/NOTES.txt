@@ -27,12 +27,27 @@ WARNING: no kcp kubeconfig Secret configured (kcp.kubeconfigSecret.name is empty
   The Secret is provided out-of-band and is NOT templated by this chart.
 {{- end }}
 
-{{- if not .Values.rbac.create }}
+Authorization model (least-privilege):
 
-NOTE: rbac.create=false — no ClusterRole/ClusterRoleBinding was created. Ensure
-  the ServiceAccount {{ include "krop-controller.serviceAccountName" . }} is
-  otherwise granted the provider-workspace permissions.
-{{- end }}
+  This chart grants the pod's ServiceAccount NO Kubernetes ClusterRole or Role in
+  the hosting cluster. The controller does not act on the hosting cluster's API
+  for business logic — it authorizes against kcp using the mounted, workspace-
+  scoped kubeconfig above, as the identity:
+
+    system:serviceaccount:{{ .Release.Namespace }}:{{ include "krop-controller.serviceAccountName" . }}
+
+  Grant that identity least-privilege authority INSIDE kcp by applying the
+  kcp-native RBAC fixtures (substitute SA_IDENTITY + PROVIDER_WORKSPACE):
+
+    config/kcp/rbac/root-rbac.yaml       -> apply in the kcp ROOT workspace
+    config/kcp/rbac/provider-rbac.yaml   -> apply in the PROVIDER workspace
+
+  Cross-workspace (consumer-target) writes need ZERO standing RBAC in consumer
+  workspaces: they flow through the published APIExport's virtual-workspace
+  identity and are authorized ONLY when the consumer's APIBinding ACCEPTS the
+  APIExport's permissionClaims. Without acceptance the write is rejected.
+
+  See docs/permissions.md for the full model and a least-privilege checklist.
 
 The blueprint CRD (resourcegraphdefinitions.krop.opendefense.cloud) is installed
 from the chart's crds/ directory and must be present in the provider workspace.

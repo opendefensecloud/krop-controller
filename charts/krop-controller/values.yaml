@@ -20,6 +20,16 @@ nameOverride: ""
 # (see controller.leaderElect), so keep this at 1 for a single active manager.
 replicaCount: 1
 
+# -- ServiceAccount for the controller pod.
+#
+# The chart deliberately creates NO Kubernetes ClusterRole/ClusterRoleBinding in
+# the HOSTING (kind/management) cluster. krop-controller performs all of its
+# business logic against kcp via a mounted, workspace-scoped kubeconfig (see
+# `kcp.kubeconfigSecret` below) — NOT against the hosting cluster's API. Its
+# real authority lives in kcp and is expressed as kcp-native RBAC bound to the
+# identity `system:serviceaccount:<namespace>:<serviceaccount>` (apply the
+# fixtures in config/kcp/rbac/ into the target kcp workspaces). The pod only
+# needs its ServiceAccount to mount the kubeconfig Secret. See docs/permissions.md.
 serviceAccount:
   # -- Create a ServiceAccount for the controller
   create: true
@@ -27,11 +37,6 @@ serviceAccount:
   name: ""
   # -- Annotations for the ServiceAccount
   annotations: {}
-
-rbac:
-  # -- Create the ClusterRole and ClusterRoleBinding for the provider-workspace
-  # operations + blueprint watch (see files/role.yaml).
-  create: true
 
 # -- Controller runtime configuration.
 #
