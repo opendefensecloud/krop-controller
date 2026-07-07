@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -40,6 +41,9 @@ type Reconciler struct {
 	ProviderClient client.Client
 	// InstanceGVK is the generated instance kind this reconciler serves.
 	InstanceGVK schema.GroupVersionKind
+	// BlueprintName is the blueprint/export identifier stamped as the
+	// `blueprint` GC label on every materialized child.
+	BlueprintName string
 }
 
 // Reconcile fetches the instance via consumerClient, drives the engine with both
@@ -53,6 +57,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 		return kropengine.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Deletion: run cross-workspace GC, then drop the finalizer.
+	if inst.GetDeletionTimestamp() != nil {
+		if slices.Contains(inst.GetFinalizers(), kropengine.Finalizer) {
+			if err := r.deleteChildren(ctx, consumerClient, string(inst.GetUID())); err != nil {
+				return kropengine.Result{}, err
+			}
+			inst.SetFinalizers(removeString(inst.GetFinalizers(), kropengine.Finalizer))
+			if err := consumerClient.Update(ctx, inst); err != nil {
+				return kropengine.Result{}, err
+			}
+		}
+		return kropengine.Result{}, nil
+	}
+
+	// Ensure the finalizer BEFORE applying any children (grounding rule).
+	if !slices.Contains(inst.GetFinalizers(), kropengine.Finalizer) {
+		inst.SetFinalizers(append(inst.GetFinalizers(), kropengine.Finalizer))
+		if err := consumerClient.Update(ctx, inst); err != nil {
+			return kropengine.Result{}, err
+		}
+		// The Update re-triggers reconcile with the finalizer present; apply then.
+		return kropengine.Result{}, nil
+	}
+
 	rt, err := kroruntime.FromGraph(r.Graph, inst, krograph.RGDConfig{
 		MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000,
 	})
@@ -61,12 +89,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	}
 
 	instanceName := inst.GetName()
+	labels := kropengine.GCLabels(string(inst.GetUID()), clusterName, r.BlueprintName)
 	appliers := map[kropengine.Target]kropengine.Applier{
-		kropengine.TargetConsumer: kropengine.NewSSAApplier(consumerClient),
-		kropengine.TargetProvider: kropengine.NewQualifyingApplier(
-			kropengine.NewSSAApplier(r.ProviderClient),
-			func(orig string) string { return kropengine.ProviderChildName(clusterName, instanceName, orig) },
-		),
+		kropengine.TargetConsumer: kropengine.NewLabelingApplier(
+			kropengine.NewOwnerRefApplier(kropengine.NewSSAApplier(consumerClient), inst), labels),
+		kropengine.TargetProvider: kropengine.NewLabelingApplier(
+			kropengine.NewQualifyingApplier(kropengine.NewSSAApplier(r.ProviderClient),
+				func(orig string) string { return kropengine.ProviderChildName(clusterName, instanceName, orig) }),
+			labels),
 	}
 
 	res, err := kropengine.New().Reconcile(ctx, rt, appliers)
@@ -81,4 +111,58 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 		}
 	}
 	return res, nil
+}
+
+// deleteChildren deletes all children of the instance (by the instance-uid
+// label) in both target workspaces, enumerating each target's child GVKs from
+// the compiled graph. Consumer children are also owner-ref backstopped.
+func (r *Reconciler) deleteChildren(ctx context.Context, consumerClient client.Client, instanceUID string) error {
+	sel := client.MatchingLabels{kropengine.LabelInstanceUID: instanceUID}
+	for target, cl := range map[kropengine.Target]client.Client{
+		kropengine.TargetConsumer: consumerClient,
+		kropengine.TargetProvider: r.ProviderClient,
+	} {
+		for _, gvk := range r.childGVKs(target) {
+			list := &unstructured.UnstructuredList{}
+			list.SetGroupVersionKind(gvk)
+			if err := cl.List(ctx, list, sel); err != nil {
+				return fmt.Errorf("listing %s children: %w", gvk.Kind, err)
+			}
+			for i := range list.Items {
+				if err := cl.Delete(ctx, &list.Items[i]); client.IgnoreNotFound(err) != nil {
+					return fmt.Errorf("deleting %s %s: %w", gvk.Kind, list.Items[i].GetName(), err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// childGVKs returns the distinct child GVKs of the given target from the graph.
+func (r *Reconciler) childGVKs(target kropengine.Target) []schema.GroupVersionKind {
+	seen := map[schema.GroupVersionKind]bool{}
+	var out []schema.GroupVersionKind
+	for _, node := range r.Graph.Nodes {
+		t, err := kropengine.TargetOf(node.Template)
+		if err != nil || t != target {
+			continue
+		}
+		gvk := node.Template.GroupVersionKind()
+		if !seen[gvk] {
+			seen[gvk] = true
+			out = append(out, gvk)
+		}
+	}
+	return out
+}
+
+// removeString returns s without any occurrence of v.
+func removeString(s []string, v string) []string {
+	out := s[:0:0]
+	for _, x := range s {
+		if x != v {
+			out = append(out, x)
+		}
+	}
+	return out
 }
