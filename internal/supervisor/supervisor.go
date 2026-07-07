@@ -27,17 +27,24 @@ import (
 // returns when the passed context is cancelled (or on fatal error).
 type StartFunc func(ctx context.Context, exportName string) error
 
+// entry is one running per-export manager. It is tracked by pointer identity so
+// forget can distinguish generations across a fast stop/restart (context.CancelFunc
+// values are not comparable, so a token pointer is used instead).
+type entry struct {
+	cancel context.CancelFunc
+}
+
 // Supervisor tracks running per-export managers.
 type Supervisor struct {
 	start StartFunc
 
 	mu      sync.Mutex
-	running map[string]context.CancelFunc
+	running map[string]*entry
 }
 
 // New returns a Supervisor that uses start to launch each manager.
 func New(start StartFunc) *Supervisor {
-	return &Supervisor{start: start, running: map[string]context.CancelFunc{}}
+	return &Supervisor{start: start, running: map[string]*entry{}}
 }
 
 // Ensure starts a manager for exportName if not already running (idempotent).
@@ -48,12 +55,27 @@ func (s *Supervisor) Ensure(parent context.Context, exportName string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(parent)
-	s.running[exportName] = cancel
+	e := &entry{cancel: cancel}
+	s.running[exportName] = e
 	go func() {
+		// Clear our entry on return so a crashed/exited manager can be
+		// re-Ensured. forget checks pointer identity, so it never removes a
+		// newer entry created by a stop/restart while this start was returning.
+		defer s.forget(exportName, e)
 		// start blocks until ctx is cancelled; ignore the returned error here
 		// (the caller observes liveness via Running / logs inside start).
 		_ = s.start(ctx, exportName)
 	}()
+}
+
+// forget deletes the running entry for exportName only if it is still e, so a
+// slow-exiting manager cannot clobber a newer generation.
+func (s *Supervisor) forget(exportName string, e *entry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running[exportName] == e {
+		delete(s.running, exportName)
+	}
 }
 
 // Running reports whether a manager is active for exportName.
@@ -67,10 +89,10 @@ func (s *Supervisor) Running(exportName string) bool {
 // Stop cancels and forgets the manager for exportName.
 func (s *Supervisor) Stop(exportName string) {
 	s.mu.Lock()
-	cancel, ok := s.running[exportName]
+	e, ok := s.running[exportName]
 	delete(s.running, exportName)
 	s.mu.Unlock()
 	if ok {
-		cancel()
+		e.cancel()
 	}
 }
