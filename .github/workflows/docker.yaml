@@ -1,0 +1,130 @@
+name: Build/Publish Docker Image
+
+permissions:
+  contents: read
+
+on:
+  release:
+    types:
+      - published
+  push:
+    branches:
+      - main
+    tags:
+      - v*
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+    types: [labeled, unlabeled, opened, synchronize, reopened]
+
+jobs:
+  buildAndPush:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # for keyless signing
+      attestations: write
+    name: Build and Publish Docker Image
+    # Condition: Run on push to main/tags, published release, or PR with 'ok-to-image' label
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && (
+        contains(toJSON(github.event.pull_request.labels), '"ok-to-image"') ||
+        contains(toJSON(github.event.pull_request.labels), '"ok-to-e2e"')
+      )) ||
+      (github.event_name == 'release' && github.event.action == 'published')
+    runs-on: ubuntu-24.04
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        id: meta
+        with:
+          images: |
+            ghcr.io/opendefense/krop-controller
+          tags: |
+            type=semver,pattern={{version}}
+            type=schedule
+            type=ref,event=branch
+            type=ref,event=tag
+            type=ref,event=pr
+            type=sha
+          flavor: |
+            latest=${{ github.ref == 'refs/heads/main' }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+        with:
+          platforms: arm64
+      - name: Set up Docker Buildx
+        timeout-minutes: 5
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        with:
+          version: latest
+      - name: Login to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        id: image
+        timeout-minutes: 20
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign image with cosign
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          IFS=',' read -ra TAGS <<< "${{ steps.meta.outputs.tags }}"
+          for tag in "${TAGS[@]}"; do
+            cosign sign \
+              -a "repo=${{ github.repository }}" \
+              -a "workflow=${{ github.workflow }}" \
+              -a "sha=${{ github.sha }}" \
+              --yes \
+              "$tag"@${{ steps.image.outputs.digest }}
+          done
+      - name: Extract first tag
+        id: first-tag
+        run: |
+          IFS=$'\n' read -ra TAGS <<< "${{ steps.meta.outputs.tags }}"
+          echo "tag=${TAGS[0]}" >> $GITHUB_OUTPUT
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.first-tag.outputs.tag }}
+          format: 'cyclonedx-json'
+          output-file: 'sbom.cyclonedx.json'
+          upload-release-assets: false # we use immutable releases
+      - name: Attest SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4
+        with:
+          subject-name: ghcr.io/opendefense/krop-controller
+          subject-digest: ${{ steps.image.outputs.digest }}
+          sbom-path: 'sbom.cyclonedx.json'
+          push-to-registry: true
+      - name: Attest provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        with:
+          subject-name: ghcr.io/opendefense/krop-controller
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
