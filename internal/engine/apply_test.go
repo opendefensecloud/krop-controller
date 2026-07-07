@@ -69,3 +69,26 @@ func TestSSAApplier_AppliesAndReadsBack(t *testing.T) {
 		t.Fatalf("read-back data.region = %q, want eu", region)
 	}
 }
+
+func TestQualifyingApplier_RenamesBeforeDelegating(t *testing.T) {
+	inner := &fakeApplier{}
+	q := NewQualifyingApplier(inner, func(orig string) string { return "pfx-" + orig })
+
+	obj := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]interface{}{"name": "record", "namespace": "default"},
+	}}
+	if _, err := q.Apply(context.Background(), obj); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(inner.applied) != 1 {
+		t.Fatalf("inner not called once: %d", len(inner.applied))
+	}
+	if got := inner.applied[0].GetName(); got != "pfx-record" {
+		t.Fatalf("inner received name %q, want pfx-record", got)
+	}
+	// original object must not be mutated
+	if obj.GetName() != "record" {
+		t.Fatalf("caller's object was mutated: name=%q", obj.GetName())
+	}
+}
