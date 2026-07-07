@@ -16,9 +16,8 @@
 package engine
 
 import (
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
 	"github.com/kubernetes-sigs/kro/pkg/runtime"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // ProjectStatus returns the instance object with its blueprint-mapped status.*
@@ -29,5 +28,6 @@ func ProjectStatus(rt *runtime.Runtime) (*unstructured.Unstructured, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return desired[0], nil
 }

@@ -83,6 +83,7 @@ func (s *Supervisor) Running(exportName string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, ok := s.running[exportName]
+
 	return ok
 }
 

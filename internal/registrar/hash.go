@@ -19,14 +19,21 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 
 	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
 )
 
 // SpecHash returns a short deterministic content hash of a blueprint spec, used
 // for the ARS name suffix and for change-detection (skip rebuild when unchanged).
-func SpecHash(spec krov1alpha1.ResourceGraphDefinitionSpec) string {
-	b, _ := json.Marshal(spec) // stable: json.Marshal sorts map keys
+// It can fail because the spec embeds runtime.RawExtension, whose MarshalJSON is
+// fallible; callers must surface the error rather than hash a partial body.
+func SpecHash(spec krov1alpha1.ResourceGraphDefinitionSpec) (string, error) {
+	b, err := json.Marshal(spec) // stable: json.Marshal sorts map keys
+	if err != nil {
+		return "", fmt.Errorf("marshaling blueprint spec for hashing: %w", err)
+	}
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])[:12]
+
+	return hex.EncodeToString(sum[:])[:12], nil
 }

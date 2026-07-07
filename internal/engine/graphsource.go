@@ -18,10 +18,9 @@ package engine
 import (
 	"fmt"
 
-	"k8s.io/client-go/rest"
-
 	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
 	"github.com/kubernetes-sigs/kro/pkg/graph"
+	"k8s.io/client-go/rest"
 )
 
 // GraphSource builds a compiled kro graph from a blueprint RGD. Split behind an
@@ -53,6 +52,7 @@ func NewEndpointGraphSource(cfg *rest.Config) (*EndpointGraphSource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("EndpointGraphSource: %w", err)
 	}
+
 	return &EndpointGraphSource{builder: b}, nil
 }
 

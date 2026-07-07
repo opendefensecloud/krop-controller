@@ -34,10 +34,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kcp-dev/multicluster-provider/apiexport"
 	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	corev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
 	tenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
+	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -51,9 +53,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	"github.com/kcp-dev/multicluster-provider/apiexport"
-	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -98,6 +97,7 @@ func (p *published) Get(export string) (servedBlueprint, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	sb, ok := p.m[export]
+
 	return sb, ok
 }
 
@@ -209,6 +209,7 @@ func run() error {
 					return false, nil
 				}
 				sliceName = name
+
 				return true, nil
 			}); err != nil {
 			return fmt.Errorf("waiting for APIExportEndpointSlice for %q: %w", exportName, err)
@@ -264,6 +265,7 @@ func run() error {
 				return ctrl.Result{RequeueAfter: requeueInterval}, nil
 			}
 			l.Info("reconciled", "ready", res.Ready)
+
 			return ctrl.Result{}, nil
 		})
 
@@ -275,6 +277,7 @@ func run() error {
 		}
 
 		exportLog.Info("starting instance manager")
+
 		return imgr.Start(ctx)
 	}
 
@@ -312,6 +315,7 @@ func run() error {
 	if err := mgr.Start(rootCtx); err != nil {
 		return fmt.Errorf("running provider manager: %w", err)
 	}
+
 	return nil
 }
 
@@ -321,6 +325,7 @@ func run() error {
 func newInstance(gvk schema.GroupVersionKind) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(gvk)
+
 	return u
 }
 
@@ -330,16 +335,17 @@ func newInstance(gvk schema.GroupVersionKind) *unstructured.Unstructured {
 // so the graph-cache key stays stable + unique per workspace regardless.
 func providerWorkspaceName(host string) string {
 	const marker = "/clusters/"
-	i := strings.Index(host, marker)
-	if i < 0 {
+	_, after, ok := strings.Cut(host, marker)
+	if !ok {
 		return host
 	}
-	name := host[i+len(marker):]
+	name := after
 	if j := strings.IndexByte(name, '/'); j >= 0 {
 		name = name[:j]
 	}
 	if name == "" {
 		return host
 	}
+
 	return name
 }

@@ -21,12 +21,11 @@ import (
 	"fmt"
 	"slices"
 
+	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
+	kroruntime "github.com/kubernetes-sigs/kro/pkg/runtime"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
-	kroruntime "github.com/kubernetes-sigs/kro/pkg/runtime"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 )
@@ -68,6 +67,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 				return kropengine.Result{}, err
 			}
 		}
+
 		return kropengine.Result{}, nil
 	}
 
@@ -110,6 +110,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 			_ = consumerClient.Status().Update(ctx, inst)
 		}
 	}
+
 	return res, nil
 }
 
@@ -135,6 +136,7 @@ func (r *Reconciler) deleteChildren(ctx context.Context, consumerClient client.C
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -153,6 +155,7 @@ func (r *Reconciler) childGVKs(target kropengine.Target) []schema.GroupVersionKi
 			out = append(out, gvk)
 		}
 	}
+
 	return out
 }
 
@@ -164,5 +167,6 @@ func removeString(s []string, v string) []string {
 			out = append(out, x)
 		}
 	}
+
 	return out
 }

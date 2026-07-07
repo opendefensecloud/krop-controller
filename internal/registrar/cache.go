@@ -42,6 +42,7 @@ func (c *GraphCache) Get(workspace, name, specHash string) (*graph.Graph, bool) 
 		return nil, false
 	}
 	g, ok := byHash[specHash]
+
 	return g, ok
 }
 

@@ -16,12 +16,12 @@
 package engine
 
 import (
-	_ "embed"
 	"fmt"
 
+	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
 	"sigs.k8s.io/yaml"
 
-	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
+	_ "embed"
 )
 
 //go:embed embedded/blueprint-kubernetescluster.yaml
@@ -34,5 +34,6 @@ func LoadExampleBlueprint() (*krov1alpha1.ResourceGraphDefinition, error) {
 	if err := yaml.Unmarshal(exampleBlueprintYAML, &rgd); err != nil {
 		return nil, fmt.Errorf("unmarshalling example blueprint: %w", err)
 	}
+
 	return &rgd, nil
 }

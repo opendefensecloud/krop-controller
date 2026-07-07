@@ -20,17 +20,27 @@ import (
 	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
 )
 
+func mustHash(t *testing.T, spec krov1alpha1.ResourceGraphDefinitionSpec) string {
+	t.Helper()
+	h, err := SpecHash(spec)
+	if err != nil {
+		t.Fatalf("SpecHash: %v", err)
+	}
+
+	return h
+}
+
 func TestSpecHash_StableAndSensitive(t *testing.T) {
 	a := krov1alpha1.ResourceGraphDefinitionSpec{Schema: &krov1alpha1.Schema{Kind: "A"}}
 	b := krov1alpha1.ResourceGraphDefinitionSpec{Schema: &krov1alpha1.Schema{Kind: "A"}}
 	c := krov1alpha1.ResourceGraphDefinitionSpec{Schema: &krov1alpha1.Schema{Kind: "B"}}
-	if SpecHash(a) != SpecHash(b) {
+	if mustHash(t, a) != mustHash(t, b) {
 		t.Fatal("equal specs must hash equal")
 	}
-	if SpecHash(a) == SpecHash(c) {
+	if mustHash(t, a) == mustHash(t, c) {
 		t.Fatal("different specs must hash differently")
 	}
-	if len(SpecHash(a)) == 0 {
+	if len(mustHash(t, a)) == 0 {
 		t.Fatal("empty hash")
 	}
 }

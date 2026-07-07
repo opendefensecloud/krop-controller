@@ -22,13 +22,14 @@ import (
 )
 
 func obj(annos map[string]string) *unstructured.Unstructured {
-	u := &unstructured.Unstructured{Object: map[string]interface{}{
+	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]interface{}{"name": "x"},
+		"metadata": map[string]any{"name": "x"},
 	}}
 	if annos != nil {
 		u.SetAnnotations(annos)
 	}
+
 	return u
 }
 

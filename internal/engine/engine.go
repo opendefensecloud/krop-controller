@@ -19,9 +19,8 @@ import (
 	"context"
 	"fmt"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
 	"github.com/kubernetes-sigs/kro/pkg/runtime"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // Engine drives kro's runtime for a single instance: it resolves, routes,
@@ -59,9 +58,12 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 		desired, err := node.GetDesired()
 		if err != nil {
 			// A dependency is not yet observed/ready → don't apply partial;
-			// converge on a later requeue.
+			// converge on a later requeue. This is expected convergence flow,
+			// not a reconcile error, so we deliberately drop err and requeue.
 			res.Ready = false
 			res.Requeue = true
+
+			//nolint:nilerr // unresolved dependency is normal convergence: signal NotReady+Requeue, not a hard error.
 			return res, nil
 		}
 
@@ -90,5 +92,6 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 			res.Requeue = true
 		}
 	}
+
 	return res, nil
 }

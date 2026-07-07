@@ -44,5 +44,6 @@ func ProviderChildName(clusterName, instanceName, originalName string) string {
 	if len(base)+1+len(suffix) > maxNameLen {
 		base = base[:maxNameLen-1-len(suffix)]
 	}
+
 	return base + "-" + suffix
 }

@@ -36,18 +36,6 @@ import (
 	"strings"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apimachinery/pkg/util/yaml"
-	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	"github.com/kcp-dev/logicalcluster/v3"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	clusterclient "github.com/kcp-dev/multicluster-provider/client"
@@ -56,12 +44,23 @@ import (
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	"github.com/kcp-dev/sdk/apis/core"
 	tenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	kropctrl "go.opendefense.cloud/krop-controller/internal/controller"
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 const m2ExportName = "kubernetesclusters.krop.opendefense.cloud"
@@ -116,6 +115,7 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 			if len(slice.Status.APIExportEndpoints) == 0 {
 				return false, "no endpoints yet"
 			}
+
 			return true, ""
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "APIExport vw endpoints not populated")
 
@@ -130,6 +130,7 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 			if binding.Status.Phase != apisv1alpha2.APIBindingPhaseBound {
 				return false, "binding phase " + string(binding.Status.Phase)
 			}
+
 			return true, ""
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "consumer APIBinding not Bound")
 
@@ -139,6 +140,7 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 			if err := cli.Cluster(consumerPath).List(ctx, list); err != nil {
 				return false, err.Error()
 			}
+
 			return true, ""
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "KubernetesCluster type not served in consumer workspace")
 
@@ -154,11 +156,12 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 			}
 			conds, _, _ := unstructured.NestedSlice(crd.Object, "status", "conditions")
 			for _, c := range conds {
-				cm, _ := c.(map[string]interface{})
+				cm, _ := c.(map[string]any)
 				if cm["type"] == "Established" && cm["status"] == "True" {
 					return true, ""
 				}
 			}
+
 			return false, "AgentRequest CRD not Established"
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "AgentRequest CRD not established")
 
@@ -200,6 +203,7 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 				if res.Requeue {
 					return ctrl.Result{RequeueAfter: time.Second}, nil
 				}
+
 				return ctrl.Result{}, nil
 			}),
 		)).To(Succeed())
@@ -219,10 +223,10 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 	})
 
 	It("pends the consumer child until the provider AgentRequest status is set, then propagates it", func() {
-		instance := &unstructured.Unstructured{Object: map[string]interface{}{
+		instance := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "krop.opendefense.cloud/v1alpha1", "kind": "KubernetesCluster",
-			"metadata": map[string]interface{}{"name": "demo", "namespace": "default"},
-			"spec":     map[string]interface{}{"region": "eu"},
+			"metadata": map[string]any{"name": "demo", "namespace": "default"},
+			"spec":     map[string]any{"region": "eu"},
 		}}
 		Expect(cli.Cluster(consumerPath).Create(ctx, instance)).To(Succeed())
 
@@ -233,6 +237,7 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 			ar := &unstructured.Unstructured{}
 			ar.SetGroupVersionKind(schema.GroupVersionKind{Group: "fulfil.krop.opendefense.cloud", Version: "v1alpha1", Kind: "AgentRequest"})
 			err := cli.Cluster(providerPath).Get(ctx, agentKey, ar)
+
 			return err == nil, "agentrequest not created"
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "provider AgentRequest not created")
 
@@ -241,6 +246,7 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 			cm := &unstructured.Unstructured{}
 			cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
 			err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm)
+
 			return err != nil // still not found
 		}, 2*time.Second, 200*time.Millisecond).Should(BeTrue(), "consumer child must pend until provider status is set")
 
@@ -259,6 +265,7 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 				return false, err.Error()
 			}
 			tok, _, _ := unstructured.NestedString(cm.Object, "data", "token")
+
 			return tok == "tok-xyz789", "consumer cm data.token=" + tok
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "cross-target token did not propagate to the consumer child")
 
@@ -270,6 +277,7 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 				return false, err.Error()
 			}
 			tok, _, _ := unstructured.NestedString(got.Object, "status", "agentToken")
+
 			return tok == "tok-xyz789", "status.agentToken=" + tok
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "instance status.agentToken not mapped")
 	})

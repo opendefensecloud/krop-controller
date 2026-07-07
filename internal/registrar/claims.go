@@ -17,11 +17,9 @@ package registrar
 import (
 	"sort"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
-
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
-
 	"github.com/kubernetes-sigs/kro/pkg/graph"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 )
@@ -38,6 +36,7 @@ func DeriveClaims(foreign []schema.GroupResource, identity map[schema.GroupResou
 		if sorted[i].Group != sorted[j].Group {
 			return sorted[i].Group < sorted[j].Group
 		}
+
 		return sorted[i].Resource < sorted[j].Resource
 	})
 	claims := make([]apisv1alpha2.PermissionClaim, 0, len(sorted))
@@ -48,6 +47,7 @@ func DeriveClaims(foreign []schema.GroupResource, identity map[schema.GroupResou
 			IdentityHash:  identity[gr],
 		})
 	}
+
 	return claims
 }
 
@@ -70,5 +70,6 @@ func ForeignConsumerGRs(g *graph.Graph, instanceGR schema.GroupResource) []schem
 		seen[gr] = true
 		out = append(out, gr)
 	}
+
 	return out
 }

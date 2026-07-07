@@ -37,6 +37,7 @@ func ValidateKubeconfig(host string) error {
 	if !strings.Contains(host, clustersPath) {
 		return fmt.Errorf("kubeconfig host %q is not workspace-scoped (missing %q)", host, clustersPath)
 	}
+
 	return nil
 }
 
@@ -54,5 +55,6 @@ func FindEndpointSlice(ctx context.Context, c client.Client, apiExportName strin
 			return slices.Items[i].Name, nil
 		}
 	}
+
 	return "", fmt.Errorf("no APIExportEndpointSlice found for APIExport %q", apiExportName)
 }

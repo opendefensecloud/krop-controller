@@ -19,13 +19,12 @@ import (
 	"slices"
 	"testing"
 
+	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-
-	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 )
@@ -49,6 +48,7 @@ func mkInstance(name string, deleting bool, finalizers ...string) *unstructured.
 		now := metav1.Now()
 		u.SetDeletionTimestamp(&now)
 	}
+
 	return u
 }
 
