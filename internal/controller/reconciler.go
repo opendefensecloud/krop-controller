@@ -72,6 +72,10 @@ type Reconciler struct {
 	// RecordNamespace is the provider-workspace namespace where the per-instance
 	// liveness record (a ConfigMap) is written. Defaults to "default" when empty.
 	RecordNamespace string
+	// Routing maps resource id → target for this blueprint's nodes (empty targets
+	// default to consumer). Populated on publish from the wrapper spec's ToKro.
+	// Not yet consumed by the engine (annotation-based routing remains this task).
+	Routing map[string]kropengine.Target
 }
 
 // recordNamespace returns the configured liveness-record namespace, or the

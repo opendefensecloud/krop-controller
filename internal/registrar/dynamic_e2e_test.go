@@ -59,8 +59,9 @@ const bindingPath = "../../test/fixtures/apibinding-kubernetescluster.yaml"
 // needs to serve: the compiled graph and the generated instance kind. It mirrors
 // cmd/controller/main.go's servedBlueprint.
 type servedGraph struct {
-	graph *krograph.Graph
-	gvk   schema.GroupVersionKind
+	graph   *krograph.Graph
+	gvk     schema.GroupVersionKind
+	routing map[string]kropengine.Target
 }
 
 // graphRegistry is a thread-safe registry keyed by export name (mirrors main.go's

@@ -59,9 +59,10 @@ type Registrar struct {
 	// an instance manager is running for this blueprint's export. changed reports
 	// whether the served specHash actually differs from what was last published
 	// (true for a new blueprint or a spec edit, false for an unchanged resync), so
-	// the wiring can restart the manager only when the compiled graph changed. May
-	// be nil.
-	OnPublished func(exportName string, instanceGVK schema.GroupVersionKind, g *graph.Graph, changed bool)
+	// the wiring can restart the manager only when the compiled graph changed.
+	// routing is the resource-id → target map extracted from the blueprint spec
+	// (empty targets default to consumer downstream). May be nil.
+	OnPublished func(exportName string, instanceGVK schema.GroupVersionKind, g *graph.Graph, routing map[string]kropengine.Target, changed bool)
 	// OnDeleted is called during finalizer-based teardown of a deleted blueprint so
 	// the supervisor can stop the export's instance manager. May be nil.
 	OnDeleted func(exportName string)
@@ -132,9 +133,13 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 	// (changed → first start), a spec EDIT mints a new specHash (changed → restart),
 	// and an unchanged 5m resync leaves them equal (not changed → keep serving).
 	changed := bp.Status.ObservedSpecHash != specHash
+	// Strip the per-resource routing targets out of the wrapper spec: the graph
+	// builder gets clean kro types, and routingRaw (resource-id → target string)
+	// is threaded to the served blueprint below.
+	kroSpec, routingRaw := bp.Spec.ToKro()
 	g, ok := r.Cache.Get(r.Workspace, bp.Name, specHash)
 	if !ok {
-		rgd := &krov1alpha1.ResourceGraphDefinition{Spec: bp.Spec}
+		rgd := &krov1alpha1.ResourceGraphDefinition{Spec: kroSpec}
 		rgd.Name = bp.Name
 		built, err := r.Source.Build(rgd)
 		if err != nil {
@@ -142,6 +147,19 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 		}
 		g = built
 		r.Cache.Put(r.Workspace, bp.Name, specHash, g)
+	}
+
+	// Validate + convert routingRaw to typed engine targets. The CRD enum already
+	// constrains the field, but validate here too so a hand-edited or migrated
+	// blueprint with a bogus target fails the reconcile with a clear message rather
+	// than silently mis-routing.
+	routing := make(map[string]kropengine.Target, len(routingRaw))
+	for id, raw := range routingRaw {
+		t, terr := kropengine.ParseTarget(raw)
+		if terr != nil {
+			return r.fail(ctx, bp, "InvalidTarget", fmt.Errorf("resource %q: %w", id, terr))
+		}
+		routing[id] = t
 	}
 
 	instanceGR := g.Instance.Meta.GVR.GroupResource()
@@ -177,7 +195,7 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 		Kind:    ars.Spec.Names.Kind,
 	}
 	if r.OnPublished != nil {
-		r.OnPublished(exportName, instanceGVK, g, changed)
+		r.OnPublished(exportName, instanceGVK, g, routing, changed)
 	}
 
 	// Re-Get the published APIExport to observe status.identityHash, which kcp

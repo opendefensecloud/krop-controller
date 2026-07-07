@@ -95,8 +95,9 @@ const (
 // servedBlueprint is what the Registrar records on publish and the per-export
 // manager needs to serve: the compiled graph and the generated instance kind.
 type servedBlueprint struct {
-	graph *krograph.Graph
-	gvk   schema.GroupVersionKind
+	graph   *krograph.Graph
+	gvk     schema.GroupVersionKind
+	routing map[string]kropengine.Target
 }
 
 // published is a thread-safe registry of served blueprints keyed by export name.
@@ -320,6 +321,7 @@ func run() error {
 			ProviderClient: providerClient,
 			InstanceGVK:    sb.gvk,
 			BlueprintName:  exportName,
+			Routing:        sb.routing,
 		}
 
 		reconcileFn := mcreconcile.Func(func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -377,9 +379,9 @@ func run() error {
 		Workspace: workspace,
 		Cache:     registrar.NewGraphCache(),
 		Source:    graphSource,
-		OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, changed bool) {
+		OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, routing map[string]kropengine.Target, changed bool) {
 			// Always update the served graph so a restarted startFn reads the latest.
-			registry.Set(exportName, servedBlueprint{graph: g, gvk: instanceGVK})
+			registry.Set(exportName, servedBlueprint{graph: g, gvk: instanceGVK, routing: routing})
 			// When the compiled graph CHANGED (new blueprint or spec edit), stop the
 			// running manager first so Ensure restarts it and its reconciler closure
 			// re-reads the updated registry graph — otherwise a live spec edit would

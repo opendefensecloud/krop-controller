@@ -15,7 +15,6 @@
 package v1alpha1
 
 import (
-	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -37,9 +36,9 @@ type BlueprintStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// ResourceGraphDefinition is a provider-authored blueprint. Its spec is
-// identical to kro's ResourceGraphDefinition spec (routing lives in per-resource
-// template annotations); the engine parses it into kro's type unchanged.
+// ResourceGraphDefinition is a provider-authored blueprint. Its spec wraps kro's
+// ResourceGraphDefinition spec (Schema + Resources), adding a per-resource routing
+// `target` field; ToKro strips the targets back into kro's type for the builder.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
@@ -48,8 +47,8 @@ type ResourceGraphDefinition struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   krov1alpha1.ResourceGraphDefinitionSpec `json:"spec,omitempty"`
-	Status BlueprintStatus                         `json:"status,omitempty"`
+	Spec   ResourceGraphDefinitionSpec `json:"spec,omitempty"`
+	Status BlueprintStatus             `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
