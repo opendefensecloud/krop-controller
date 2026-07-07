@@ -107,6 +107,10 @@ func (p *published) Set(export string, sb servedBlueprint) {
 	p.m[export] = sb
 }
 
+// version is the build version, injected at link time via
+// -ldflags "-X main.version=...". It defaults to "dev" for local builds.
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		ctrl.Log.WithName("entrypoint").Error(err, "fatal")
@@ -118,6 +122,7 @@ func run() error {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	rootCtx := signals.SetupSignalHandler()
 	entryLog := log.Log.WithName("entrypoint")
+	entryLog.Info("starting krop-controller", "version", version)
 
 	flag.Parse()
 
