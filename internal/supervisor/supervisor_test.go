@@ -35,6 +35,7 @@ func TestSupervisor_EnsureIsIdempotent_AndStopReleases(t *testing.T) {
 		mu.Unlock()
 		startedCh <- export
 		<-ctx.Done()
+
 		return nil
 	})
 	count := func() int { mu.Lock(); defer mu.Unlock(); return started }

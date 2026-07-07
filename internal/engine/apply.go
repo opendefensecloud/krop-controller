@@ -17,6 +17,7 @@ package engine
 
 import (
 	"context"
+	"maps"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -69,6 +70,7 @@ func (a *SSAApplier) Apply(ctx context.Context, obj *unstructured.Unstructured) 
 	if err := a.c.Get(ctx, client.ObjectKeyFromObject(desired), observed); err != nil {
 		return nil, err
 	}
+
 	return observed, nil
 }
 
@@ -89,6 +91,7 @@ func NewQualifyingApplier(inner Applier, rename func(original string) string) *Q
 func (q *QualifyingApplier) Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	renamed := obj.DeepCopy()
 	renamed.SetName(q.rename(obj.GetName()))
+
 	return q.inner.Apply(ctx, renamed)
 }
 
@@ -111,10 +114,9 @@ func (l *LabelingApplier) Apply(ctx context.Context, obj *unstructured.Unstructu
 	if merged == nil {
 		merged = map[string]string{}
 	}
-	for k, v := range l.labels {
-		merged[k] = v
-	}
+	maps.Copy(merged, l.labels)
 	out.SetLabels(merged)
+
 	return l.inner.Apply(ctx, out)
 }
 
@@ -143,5 +145,6 @@ func (o *OwnerRefApplier) Apply(ctx context.Context, obj *unstructured.Unstructu
 		UID:        o.owner.GetUID(),
 	}
 	out.SetOwnerReferences([]metav1.OwnerReference{ref})
+
 	return o.inner.Apply(ctx, out)
 }

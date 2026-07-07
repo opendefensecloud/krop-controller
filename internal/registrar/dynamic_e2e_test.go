@@ -40,9 +40,16 @@ import (
 	"sync"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
+	"github.com/kcp-dev/logicalcluster/v3"
+	"github.com/kcp-dev/multicluster-provider/apiexport"
+	clusterclient "github.com/kcp-dev/multicluster-provider/client"
+	"github.com/kcp-dev/multicluster-provider/envtest"
+	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
+	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	"github.com/kcp-dev/sdk/apis/core"
+	corev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
+	tenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
+	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -55,17 +62,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	"github.com/kcp-dev/logicalcluster/v3"
-	"github.com/kcp-dev/multicluster-provider/apiexport"
-	clusterclient "github.com/kcp-dev/multicluster-provider/client"
-	"github.com/kcp-dev/multicluster-provider/envtest"
-	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
-	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
-	"github.com/kcp-dev/sdk/apis/core"
-	corev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
-	tenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
-	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -75,6 +71,9 @@ import (
 	kropkcp "go.opendefense.cloud/krop-controller/internal/kcp"
 	"go.opendefense.cloud/krop-controller/internal/registrar"
 	"go.opendefense.cloud/krop-controller/internal/supervisor"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 const bindingPath = "../../test/fixtures/apibinding-kubernetescluster.yaml"
@@ -104,6 +103,7 @@ func (g *graphRegistry) Get(export string) (servedGraph, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	sg, ok := g.m[export]
+
 	return sg, ok
 }
 
@@ -177,6 +177,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 						return false, nil
 					}
 					sliceName = name
+
 					return true, nil
 				}); err != nil {
 				return fmt.Errorf("waiting for APIExportEndpointSlice for %q: %w", exportName, err)
@@ -214,7 +215,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 			}
 
 			if err := mcbuilder.ControllerManagedBy(imgr).
-				Named("krop-instance-"+exportName).
+				Named("krop-instance-" + exportName).
 				For(newInstanceObj(sg.gvk)).
 				Complete(mcreconcile.Func(func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 					cl, err := imgr.GetCluster(ctx, req.ClusterName)
@@ -228,6 +229,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 					if res.Requeue {
 						return ctrl.Result{RequeueAfter: time.Second}, nil
 					}
+
 					return ctrl.Result{}, nil
 				})); err != nil {
 				return fmt.Errorf("building krop-instance controller for %q: %w", exportName, err)
@@ -276,6 +278,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 			if binding.Status.Phase != apisv1alpha2.APIBindingPhaseBound {
 				return false, "binding phase " + string(binding.Status.Phase)
 			}
+
 			return true, ""
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "consumer APIBinding not Bound")
 
@@ -285,6 +288,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 			if err := cli.Cluster(consumerPath).List(ctx, list); err != nil {
 				return false, err.Error()
 			}
+
 			return true, ""
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "KubernetesCluster type not served in consumer workspace")
 	})
@@ -297,10 +301,10 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 
 	It("materializes the cross-target children through the auto-published export", func() {
 		// Create the instance in the consumer workspace.
-		instance := &unstructured.Unstructured{Object: map[string]interface{}{
+		instance := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "krop.opendefense.cloud/v1alpha1", "kind": "KubernetesCluster",
-			"metadata": map[string]interface{}{"name": "demo", "namespace": "default"},
-			"spec":     map[string]interface{}{"region": "eu"},
+			"metadata": map[string]any{"name": "demo", "namespace": "default"},
+			"spec":     map[string]any{"region": "eu"},
 		}}
 		Expect(cli.Cluster(consumerPath).Create(ctx, instance)).To(Succeed())
 
@@ -312,6 +316,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 			ar := &unstructured.Unstructured{}
 			ar.SetGroupVersionKind(agentGVK)
 			err := cli.Cluster(providerPath).Get(ctx, agentKey, ar)
+
 			return err == nil, "agentrequest not created yet"
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "provider AgentRequest not created (instance manager not serving the consumer cluster?)")
 
@@ -320,6 +325,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 			cm := &unstructured.Unstructured{}
 			cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
 			err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm)
+
 			return err != nil
 		}, 2*time.Second, 200*time.Millisecond).Should(BeTrue(), "consumer child must pend until the provider status is set")
 
@@ -339,6 +345,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 				return false, err.Error()
 			}
 			tok, _, _ := unstructured.NestedString(cm.Object, "data", "token")
+
 			return tok == "tok-xyz789", "consumer cm data.token=" + tok
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "cross-target token did not propagate to the consumer child")
 
@@ -350,6 +357,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 				return false, err.Error()
 			}
 			tok, _, _ := unstructured.NestedString(got.Object, "status", "agentToken")
+
 			return tok == "tok-xyz789", "status.agentToken=" + tok
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "instance status.agentToken not mapped")
 
@@ -361,6 +369,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 			ar := &unstructured.Unstructured{}
 			ar.SetGroupVersionKind(agentGVK)
 			err := cli.Cluster(providerPath).Get(ctx, agentKey, ar)
+
 			return apierrors.IsNotFound(err), "agentrequest still present"
 		}, wait.ForeverTestTimeout, 300*time.Millisecond, "provider AgentRequest not GC'd on instance delete")
 
@@ -369,6 +378,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 			cm := &unstructured.Unstructured{}
 			cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
 			err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm)
+
 			return apierrors.IsNotFound(err), "consumer ConfigMap still present"
 		}, wait.ForeverTestTimeout, 300*time.Millisecond, "consumer ConfigMap not GC'd on instance delete")
 
@@ -377,6 +387,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 			got := &unstructured.Unstructured{}
 			got.SetGroupVersionKind(instance.GroupVersionKind())
 			err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "demo"}, got)
+
 			return apierrors.IsNotFound(err), "instance still present (finalizer not removed)"
 		}, wait.ForeverTestTimeout, 300*time.Millisecond, "instance not GC'd after finalizer removal")
 	})
@@ -387,5 +398,6 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 func newInstanceObj(gvk schema.GroupVersionKind) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(gvk)
+
 	return u
 }

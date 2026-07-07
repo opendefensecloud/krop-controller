@@ -14,9 +14,13 @@ KCP ?= $(LOCALBIN)/kcp
 # version (idea.md spikes targeted v0.32.3).
 KCP_VERSION ?= 0.30.0
 
+DOCKER ?= docker
 IMG_REGISTRY ?= ghcr.io/opendefense
 IMG_TAG ?= latest
 CONTROLLER_IMG ?= $(IMG_REGISTRY)/krop-controller:$(IMG_TAG)
+
+# Build version injected into the binary via -ldflags -X main.version.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 TIMESTAMP := $(shell date '+%Y%m%d%H%M%S')
 DEV_TAG ?= dev.$(TIMESTAMP)
@@ -57,7 +61,7 @@ vet: ## Run go vet.
 
 .PHONY: build
 build: generate ## Build the controller binary.
-	$(GO) build -o $(LOCALBIN)/krop-controller ./cmd/controller/
+	$(GO) build -ldflags "-X main.version=$(VERSION)" -o $(LOCALBIN)/krop-controller ./cmd/controller/
 
 .PHONY: run
 run-controller: generate ## Run the controller from source.
@@ -65,13 +69,7 @@ run-controller: generate ## Run the controller from source.
 
 .PHONY: docker-build
 docker-build: ## Build the Docker image (native single-arch; multi-arch is the CI pipeline's job).
-	$(DOCKER) build -t $(CONTROLLER_IMG) .
-
-KCP_CONTROLLER_IMG ?= $(IMG_REGISTRY)/krop-controller-kcp:$(IMG_TAG)
-
-.PHONY: docker-build-kcp
-docker-build-kcp: ## Build the kcp-mode Docker image (cmd/controller).
-	$(DOCKER) build -f Dockerfile.kcp -t $(KCP_CONTROLLER_IMG) .
+	$(DOCKER) build --build-arg VERSION=$(VERSION) -t $(CONTROLLER_IMG) .
 
 .PHONY: docker-push
 docker-push: ## Push the Docker image.
@@ -79,7 +77,7 @@ docker-push: ## Push the Docker image.
 
 .PHONY: helm-package
 helm-package: manifests ## Package Helm chart.
-	helm package charts/access-operator
+	helm package charts/krop-controller
 
 .PHONY: deploy-standalone
 deploy-standalone: ## Apply the fog/edge standalone deployment (plain cluster, non-kcp).

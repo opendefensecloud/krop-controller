@@ -18,15 +18,15 @@ import (
 	"context"
 	"fmt"
 
+	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
+	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	graph "github.com/kubernetes-sigs/kro/pkg/graph"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
-	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
-
-	graph "github.com/kubernetes-sigs/kro/pkg/graph"
 )
 
 // fieldManager identifies the Registrar as the server-side-apply field owner.
@@ -40,6 +40,7 @@ func BuildARS(g *graph.Graph, specHash string) (*apisv1alpha1.APIResourceSchema,
 	if g.CRD == nil {
 		return nil, fmt.Errorf("graph has no generated CRD")
 	}
+
 	return apisv1alpha1.CRDToAPIResourceSchema(g.CRD, "v"+specHash)
 }
 
@@ -59,6 +60,7 @@ func applyARS(ctx context.Context, c client.Client, ars *apisv1alpha1.APIResourc
 	if err := c.Create(ctx, ars); err != nil {
 		return fmt.Errorf("creating APIResourceSchema %q: %w", ars.Name, err)
 	}
+
 	return nil
 }
 
@@ -76,6 +78,7 @@ func identityByGroupResource(ctx context.Context, c client.Client) (map[schema.G
 			out[schema.GroupResource{Group: br.Group, Resource: br.Resource}] = br.Schema.IdentityHash
 		}
 	}
+
 	return out, nil
 }
 
@@ -101,8 +104,18 @@ func UpsertAPIExport(ctx context.Context, c client.Client, exportName string, ar
 		},
 	}}
 	export.Spec.PermissionClaims = claims
-	if err := c.Patch(ctx, export, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+
+	// client.Client.Apply supersedes the deprecated client.Apply patch value: it
+	// takes a runtime.ApplyConfiguration. The typed object is converted verbatim
+	// to unstructured (identical JSON body), preserving the explicit GVK above.
+	raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(export)
+	if err != nil {
+		return fmt.Errorf("encoding APIExport %q for apply: %w", exportName, err)
+	}
+	ac := client.ApplyConfigurationFromUnstructured(&unstructured.Unstructured{Object: raw})
+	if err := c.Apply(ctx, ac, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
 		return fmt.Errorf("applying APIExport %q: %w", exportName, err)
 	}
+
 	return nil
 }

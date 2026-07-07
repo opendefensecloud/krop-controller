@@ -19,12 +19,11 @@ import (
 	"context"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
 	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
 	"github.com/kubernetes-sigs/kro/pkg/graph"
 	"github.com/kubernetes-sigs/kro/pkg/runtime"
 	"github.com/kubernetes-sigs/kro/pkg/testutil/generator"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // crossTargetRGD: provider-target vpc (VPC.status.vpcID is a real schema field in
@@ -33,42 +32,44 @@ func crossTargetRGD() *krov1alpha1.ResourceGraphDefinition {
 	rgd := generator.NewResourceGraphDefinition(
 		"xtarget",
 		generator.WithSchema("XTarget", "v1alpha1",
-			map[string]interface{}{"region": "string"},
-			map[string]interface{}{"vpcID": "${vpc.status.vpcID}"},
+			map[string]any{"region": "string"},
+			map[string]any{"vpcID": "${vpc.status.vpcID}"},
 		),
-		generator.WithResource("vpc", map[string]interface{}{
+		generator.WithResource("vpc", map[string]any{
 			"apiVersion": "ec2.services.k8s.aws/v1alpha1", "kind": "VPC",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":        "${schema.spec.region}-vpc",
-				"annotations": map[string]interface{}{TargetAnnotation: string(TargetProvider)},
+				"annotations": map[string]any{TargetAnnotation: string(TargetProvider)},
 			},
-			"spec": map[string]interface{}{"cidrBlocks": []interface{}{"10.0.0.0/16"}},
+			"spec": map[string]any{"cidrBlocks": []any{"10.0.0.0/16"}},
 		}, []string{"${vpc.status.vpcID != ''}"}, nil),
-		generator.WithResource("subnet", map[string]interface{}{
+		generator.WithResource("subnet", map[string]any{
 			"apiVersion": "ec2.services.k8s.aws/v1alpha1", "kind": "Subnet",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":        "${schema.spec.region}-subnet",
-				"annotations": map[string]interface{}{TargetAnnotation: string(TargetConsumer)},
+				"annotations": map[string]any{TargetAnnotation: string(TargetConsumer)},
 			},
-			"spec": map[string]interface{}{"vpcID": "${vpc.status.vpcID}", "cidrBlock": "10.0.1.0/24"},
+			"spec": map[string]any{"vpcID": "${vpc.status.vpcID}", "cidrBlock": "10.0.1.0/24"},
 		}, nil, nil),
 	)
 	rgd.Spec.Schema.Group = "krop.opendefense.cloud"
+
 	return rgd
 }
 
 func crossTargetRuntime(t *testing.T) *runtime.Runtime {
 	t.Helper()
 	g := buildTestGraph(t, crossTargetRGD())
-	inst := &unstructured.Unstructured{Object: map[string]interface{}{
+	inst := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "krop.opendefense.cloud/v1alpha1", "kind": "XTarget",
-		"metadata": map[string]interface{}{"name": "demo", "namespace": "default"},
-		"spec":     map[string]interface{}{"region": "eu"},
+		"metadata": map[string]any{"name": "demo", "namespace": "default"},
+		"spec":     map[string]any{"region": "eu"},
 	}}
 	rt, err := runtime.FromGraph(g, inst, graph.RGDConfig{MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000})
 	if err != nil {
 		t.Fatalf("FromGraph: %v", err)
 	}
+
 	return rt
 }
 

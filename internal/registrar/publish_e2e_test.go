@@ -29,9 +29,12 @@ import (
 	"strings"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
+	"github.com/kcp-dev/logicalcluster/v3"
+	clusterclient "github.com/kcp-dev/multicluster-provider/client"
+	"github.com/kcp-dev/multicluster-provider/envtest"
+	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
+	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	"github.com/kcp-dev/sdk/apis/core"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -43,16 +46,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/kcp-dev/logicalcluster/v3"
-	clusterclient "github.com/kcp-dev/multicluster-provider/client"
-	"github.com/kcp-dev/multicluster-provider/envtest"
-	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
-	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
-	"github.com/kcp-dev/sdk/apis/core"
-
 	kropv1alpha1 "go.opendefense.cloud/krop-controller/api/v1alpha1"
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 	"go.opendefense.cloud/krop-controller/internal/registrar"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 const (
@@ -87,6 +86,7 @@ func waitCRDEstablished(ctx context.Context, cli clusterclient.ClusterClient, ws
 				return true, ""
 			}
 		}
+
 		return false, name + " not Established"
 	}, wait.ForeverTestTimeout, 200*time.Millisecond, name+" CRD not established")
 }

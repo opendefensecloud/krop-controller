@@ -1,0 +1,53 @@
+krop-controller has been deployed.
+
+Chart:   {{ .Chart.Name }}-{{ .Chart.Version }}
+Image:   {{ include "krop-controller.image" . }}
+Release: {{ .Release.Name }} (namespace {{ .Release.Namespace }})
+
+The controller runs a kcp multicluster-runtime manager over a PROVIDER
+WORKSPACE: it watches ResourceGraphDefinition blueprints, compiles each into an
+APIExport, and reconciles the generated instance kind across consumer workspaces.
+
+{{- if .Values.kcp.kubeconfigSecret.name }}
+
+kcp kubeconfig:
+  Mounted from Secret {{ .Values.kcp.kubeconfigSecret.name | quote }} at
+  /etc/kcp/{{ .Values.kcp.kubeconfigSecret.key }} (KUBECONFIG points at it).
+  Ensure that kubeconfig is scoped to the target provider workspace.
+{{- else }}
+
+WARNING: no kcp kubeconfig Secret configured (kcp.kubeconfigSecret.name is empty).
+  The controller will start with in-cluster/default config, which is NOT
+  workspace-scoped. For real kcp use, create a Secret containing a
+  workspace-scoped kubeconfig and set:
+
+    --set kcp.kubeconfigSecret.name=<secret-name>
+    (optionally --set kcp.kubeconfigSecret.key=<key>, default "kubeconfig")
+
+  The Secret is provided out-of-band and is NOT templated by this chart.
+{{- end }}
+
+Authorization model (least-privilege):
+
+  This chart grants the pod's ServiceAccount NO Kubernetes ClusterRole or Role in
+  the hosting cluster. The controller does not act on the hosting cluster's API
+  for business logic — it authorizes against kcp using the mounted, workspace-
+  scoped kubeconfig above, as the identity:
+
+    system:serviceaccount:{{ .Release.Namespace }}:{{ include "krop-controller.serviceAccountName" . }}
+
+  Grant that identity least-privilege authority INSIDE kcp by applying the
+  kcp-native RBAC fixtures (substitute SA_IDENTITY + PROVIDER_WORKSPACE):
+
+    config/kcp/rbac/root-rbac.yaml       -> apply in the kcp ROOT workspace
+    config/kcp/rbac/provider-rbac.yaml   -> apply in the PROVIDER workspace
+
+  Cross-workspace (consumer-target) writes need ZERO standing RBAC in consumer
+  workspaces: they flow through the published APIExport's virtual-workspace
+  identity and are authorized ONLY when the consumer's APIBinding ACCEPTS the
+  APIExport's permissionClaims. Without acceptance the write is rejected.
+
+  See docs/permissions.md for the full model and a least-privilege checklist.
+
+The blueprint CRD (resourcegraphdefinitions.krop.opendefense.cloud) is installed
+from the chart's crds/ directory and must be present in the provider workspace.

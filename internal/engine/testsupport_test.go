@@ -20,14 +20,13 @@ import (
 	"testing"
 	"unsafe"
 
-	"k8s.io/apimachinery/pkg/api/meta"
-	memory "k8s.io/client-go/discovery/cached/memory"
-	restmapper "k8s.io/client-go/restmapper"
-
 	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
 	"github.com/kubernetes-sigs/kro/pkg/graph"
 	"github.com/kubernetes-sigs/kro/pkg/testutil/generator"
 	testk8s "github.com/kubernetes-sigs/kro/pkg/testutil/k8s"
+	"k8s.io/apimachinery/pkg/api/meta"
+	memory "k8s.io/client-go/discovery/cached/memory"
+	restmapper "k8s.io/client-go/restmapper"
 )
 
 // sampleRGD is the M1 blueprint: schema{region}, one consumer-target child that
@@ -38,35 +37,36 @@ func sampleRGD() *krov1alpha1.ResourceGraphDefinition {
 		"kubernetescluster",
 		generator.WithSchema(
 			"KubernetesCluster", "v1alpha1",
-			map[string]interface{}{"region": "string"},
-			map[string]interface{}{"configMapName": "${config.metadata.name}"},
+			map[string]any{"region": "string"},
+			map[string]any{"configMapName": "${config.metadata.name}"},
 		),
-		generator.WithResource("config", map[string]interface{}{
+		generator.WithResource("config", map[string]any{
 			"apiVersion": "v1",
 			"kind":       "ConfigMap",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      "${schema.spec.region}-cluster-config",
 				"namespace": "default",
-				"annotations": map[string]interface{}{
+				"annotations": map[string]any{
 					TargetAnnotation: string(TargetConsumer),
 				},
 			},
-			"data": map[string]interface{}{"region": "${schema.spec.region}"},
+			"data": map[string]any{"region": "${schema.spec.region}"},
 		}, nil, nil),
-		generator.WithResource("providerRecord", map[string]interface{}{
+		generator.WithResource("providerRecord", map[string]any{
 			"apiVersion": "v1",
 			"kind":       "ConfigMap",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      "${schema.spec.region}-provider-record",
 				"namespace": "default",
-				"annotations": map[string]interface{}{
+				"annotations": map[string]any{
 					TargetAnnotation: string(TargetProvider),
 				},
 			},
-			"data": map[string]interface{}{"region": "${schema.spec.region}"},
+			"data": map[string]any{"region": "${schema.spec.region}"},
 		}, nil, nil),
 	)
 	rgd.Spec.Schema.Group = "krop.opendefense.cloud"
+
 	return rgd
 }
 
@@ -85,10 +85,11 @@ func buildTestGraph(t *testing.T, rgd *krov1alpha1.ResourceGraphDefinition) *gra
 	if err != nil {
 		t.Fatalf("buildTestGraph: %v", err)
 	}
+
 	return g
 }
 
-func setUnexportedField(obj interface{}, name string, val interface{}) {
+func setUnexportedField(obj any, name string, val any) {
 	rv := reflect.ValueOf(obj).Elem().FieldByName(name)
 	rv = reflect.NewAt(rv.Type(), unsafe.Pointer(rv.UnsafeAddr())).Elem()
 	rv.Set(reflect.ValueOf(val))

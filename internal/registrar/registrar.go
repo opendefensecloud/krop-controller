@@ -19,6 +19,9 @@ import (
 	"fmt"
 	"time"
 
+	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
+	graph "github.com/kubernetes-sigs/kro/pkg/graph"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -26,10 +29,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
-	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
-	graph "github.com/kubernetes-sigs/kro/pkg/graph"
 
 	kropv1alpha1 "go.opendefense.cloud/krop-controller/api/v1alpha1"
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
@@ -91,6 +90,7 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 				return reconcile.Result{}, fmt.Errorf("removing blueprint finalizer: %w", err)
 			}
 		}
+
 		return reconcile.Result{}, nil
 	}
 
@@ -103,7 +103,10 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 		}
 	}
 
-	specHash := SpecHash(bp.Spec)
+	specHash, err := SpecHash(bp.Spec)
+	if err != nil {
+		return r.fail(ctx, bp, "HashFailed", err)
+	}
 	g, ok := r.Cache.Get(r.Workspace, bp.Name, specHash)
 	if !ok {
 		rgd := &krov1alpha1.ResourceGraphDefinition{Spec: bp.Spec}
@@ -190,5 +193,6 @@ func (r *Registrar) fail(ctx context.Context, bp *kropv1alpha1.ResourceGraphDefi
 		Message: err.Error(),
 	})
 	_ = r.Client.Status().Update(ctx, bp) // best-effort; the returned error requeues.
+
 	return reconcile.Result{}, err
 }

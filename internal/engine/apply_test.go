@@ -39,6 +39,7 @@ func (f *fakeApplier) Apply(_ context.Context, o *unstructured.Unstructured) (*u
 	if f.mutate != nil {
 		f.mutate(observed)
 	}
+
 	return observed, nil
 }
 
@@ -54,10 +55,10 @@ func TestSSAApplier_AppliesAndReadsBack(t *testing.T) {
 	cl := fake.NewClientBuilder().Build()
 	a := NewSSAApplier(cl)
 
-	cm := &unstructured.Unstructured{Object: map[string]interface{}{
+	cm := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]interface{}{"name": "cfg", "namespace": "default"},
-		"data":     map[string]interface{}{"region": "eu"},
+		"metadata": map[string]any{"name": "cfg", "namespace": "default"},
+		"data":     map[string]any{"region": "eu"},
 	}}
 
 	observed, err := a.Apply(context.Background(), cm)
@@ -74,9 +75,9 @@ func TestQualifyingApplier_RenamesBeforeDelegating(t *testing.T) {
 	inner := &fakeApplier{}
 	q := NewQualifyingApplier(inner, func(orig string) string { return "pfx-" + orig })
 
-	obj := &unstructured.Unstructured{Object: map[string]interface{}{
+	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]interface{}{"name": "record", "namespace": "default"},
+		"metadata": map[string]any{"name": "record", "namespace": "default"},
 	}}
 	if _, err := q.Apply(context.Background(), obj); err != nil {
 		t.Fatalf("apply: %v", err)
@@ -96,9 +97,9 @@ func TestQualifyingApplier_RenamesBeforeDelegating(t *testing.T) {
 func TestLabelingApplier_MergesLabels_NoMutateCaller(t *testing.T) {
 	inner := &fakeApplier{}
 	a := NewLabelingApplier(inner, map[string]string{"k": "v"})
-	obj := &unstructured.Unstructured{Object: map[string]interface{}{
+	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]interface{}{"name": "x", "labels": map[string]interface{}{"keep": "me"}},
+		"metadata": map[string]any{"name": "x", "labels": map[string]any{"keep": "me"}},
 	}}
 	if _, err := a.Apply(context.Background(), obj); err != nil {
 		t.Fatalf("apply: %v", err)
@@ -114,14 +115,14 @@ func TestLabelingApplier_MergesLabels_NoMutateCaller(t *testing.T) {
 
 func TestOwnerRefApplier_StampsInstanceOwner(t *testing.T) {
 	inner := &fakeApplier{}
-	owner := &unstructured.Unstructured{Object: map[string]interface{}{
+	owner := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "krop.opendefense.cloud/v1alpha1", "kind": "KubernetesCluster",
-		"metadata": map[string]interface{}{"name": "demo", "uid": "uid-9"},
+		"metadata": map[string]any{"name": "demo", "uid": "uid-9"},
 	}}
 	a := NewOwnerRefApplier(inner, owner)
-	child := &unstructured.Unstructured{Object: map[string]interface{}{
+	child := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]interface{}{"name": "x"},
+		"metadata": map[string]any{"name": "x"},
 	}}
 	if _, err := a.Apply(context.Background(), child); err != nil {
 		t.Fatalf("apply: %v", err)

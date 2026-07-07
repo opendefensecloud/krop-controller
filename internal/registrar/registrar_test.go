@@ -85,13 +85,13 @@ func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 		if controllerutil.ContainsFinalizer(got, blueprintFinalizer) {
 			t.Fatalf("finalizer %q was not removed", blueprintFinalizer)
 		}
+
 		return
 	}
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("unexpected Get error: %v", err)
 	}
 }
-
 
 // TestReconcile_DeleteWithoutFinalizerIsNoop proves a blueprint being deleted that
 // no longer carries our finalizer is a no-op: OnDeleted is not called again.

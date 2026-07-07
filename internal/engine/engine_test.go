@@ -19,18 +19,17 @@ import (
 	"context"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
 	"github.com/kubernetes-sigs/kro/pkg/graph"
 	"github.com/kubernetes-sigs/kro/pkg/runtime"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-func newInstance(region string) *unstructured.Unstructured {
-	return &unstructured.Unstructured{Object: map[string]interface{}{
+func newInstance() *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "krop.opendefense.cloud/v1alpha1",
 		"kind":       "KubernetesCluster",
-		"metadata":   map[string]interface{}{"name": "demo", "namespace": "default"},
-		"spec":       map[string]interface{}{"region": "eu"},
+		"metadata":   map[string]any{"name": "demo", "namespace": "default"},
+		"spec":       map[string]any{"region": "eu"},
 	}}
 }
 
@@ -43,11 +42,12 @@ func newRuntime(t *testing.T, inst *unstructured.Unstructured) *runtime.Runtime 
 	if err != nil {
 		t.Fatalf("FromGraph: %v", err)
 	}
+
 	return rt
 }
 
 func TestReconcile_AppliesConsumerChild_StripsRouting(t *testing.T) {
-	inst := newInstance("eu")
+	inst := newInstance()
 	rt := newRuntime(t, inst)
 	consumer := &fakeApplier{}
 
@@ -77,7 +77,7 @@ func TestReconcile_AppliesConsumerChild_StripsRouting(t *testing.T) {
 }
 
 func TestReconcile_UnconfiguredTargetErrors(t *testing.T) {
-	rt := newRuntime(t, newInstance("eu"))
+	rt := newRuntime(t, newInstance())
 	e := New()
 	// No consumer applier configured → the single consumer child cannot route.
 	_, err := e.Reconcile(context.Background(), rt, map[Target]Applier{})
@@ -87,7 +87,7 @@ func TestReconcile_UnconfiguredTargetErrors(t *testing.T) {
 }
 
 func TestReconcile_ProjectsInstanceStatus(t *testing.T) {
-	inst := newInstance("eu")
+	inst := newInstance()
 	rt := newRuntime(t, inst)
 	consumer := &fakeApplier{}
 
@@ -107,7 +107,7 @@ func TestReconcile_ProjectsInstanceStatus(t *testing.T) {
 }
 
 func TestReconcile_RoutesToBothTargets(t *testing.T) {
-	rt := newRuntime(t, newInstance("eu"))
+	rt := newRuntime(t, newInstance())
 	consumer := &fakeApplier{}
 	provider := &fakeApplier{}
 

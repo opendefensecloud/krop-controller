@@ -1,0 +1,43 @@
+# kcp-native RBAC for krop-controller — ROOT workspace.
+#
+# Apply this INTO the kcp ROOT workspace (not the hosting/kind cluster) using a
+# privileged setup identity (e.g. system:kcp:admin via the front-proxy):
+#
+#   kubectl --context <root-workspace> apply -f config/kcp/rbac/root-rbac.yaml
+#
+# Substitute the placeholder before applying:
+#   ${SA_IDENTITY}  -> the controller's kcp identity string, of the form
+#                      system:serviceaccount:<namespace>:<serviceaccount>
+#                      (matches the pod ServiceAccount and the username in the
+#                      kcp-operator Kubeconfig CR — see docs/permissions.md).
+#
+# This is the ONLY authority the controller needs in the root workspace: enter
+# child workspaces (workspaces/content:access) and resolve a workspace path to
+# its logical cluster name (workspaces get/list/watch). No writes here.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: krop-controller-root
+rules:
+  # Enter child workspaces through virtual-workspace endpoints.
+  - apiGroups: ["core.kcp.io"]
+    resources: ["workspaces/content"]
+    verbs: ["access"]
+  # Read Workspace objects to resolve workspace paths to logical cluster names.
+  - apiGroups: ["tenancy.kcp.io"]
+    resources: ["workspaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: krop-controller-root
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: krop-controller-root
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: "${SA_IDENTITY}"

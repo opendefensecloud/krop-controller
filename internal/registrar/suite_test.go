@@ -31,10 +31,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	kropv1alpha1 "go.opendefense.cloud/krop-controller/api/v1alpha1"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	kropv1alpha1 "go.opendefense.cloud/krop-controller/api/v1alpha1"
 )
 
 // The registrar envtest suite boots a real kcp from the binary that `make test`

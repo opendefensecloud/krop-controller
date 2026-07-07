@@ -15,9 +15,8 @@
 package v1alpha1
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // BlueprintStatus is the observed state the Registrar writes back.
@@ -58,8 +57,4 @@ type ResourceGraphDefinitionList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []ResourceGraphDefinition `json:"items"`
-}
-
-func init() {
-	SchemeBuilder.Register(&ResourceGraphDefinition{}, &ResourceGraphDefinitionList{})
 }

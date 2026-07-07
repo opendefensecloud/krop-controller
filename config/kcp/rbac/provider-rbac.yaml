@@ -1,0 +1,109 @@
+# kcp-native RBAC for krop-controller — PROVIDER workspace.
+#
+# Apply this INTO the kcp PROVIDER workspace (the workspace the controller's
+# kubeconfig is pinned to) using a privileged setup identity:
+#
+#   kubectl --context <provider-workspace> apply -f config/kcp/rbac/provider-rbac.yaml
+#
+# Substitute the placeholders before applying:
+#   ${SA_IDENTITY}        -> system:serviceaccount:<namespace>:<serviceaccount>
+#                            (the controller's kcp identity — see docs/permissions.md).
+#   ${PROVIDER_WORKSPACE} -> the provider workspace path (documentation only; the
+#                            binding is scoped by virtue of being applied INTO
+#                            that workspace, so no field literally consumes it).
+#
+# Everything the controller does in the provider workspace it does with THIS
+# identity: watch/finalize/status its own ResourceGraphDefinition blueprints,
+# compile each into apis.kcp.io objects (APIResourceSchema + APIExport), discover
+# the APIExportEndpointSlice, list APIBindings for identityHash resolution, and
+# write the PROVIDER-TARGET children its blueprints emit (same ownership domain,
+# design §9 — no permissionClaim involved).
+#
+# There is deliberately NO consumer-workspace RBAC anywhere: consumer-target
+# writes are authorized by the published APIExport's virtual-workspace identity
+# plus the consumer's ACCEPTED permissionClaims on its APIBinding — never by a
+# standing rule here. See config/kcp/apiexport-krop-m1.yaml (claims) and
+# test/fixtures/apibinding-kubernetescluster.yaml (acceptance).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: krop-controller-provider
+rules:
+  # --- Blueprints (the controller's own CRD) -------------------------------
+  # The Registrar watches cluster-scoped ResourceGraphDefinitions.
+  - apiGroups: ["krop.opendefense.cloud"]
+    resources: ["resourcegraphdefinitions"]
+    # `update` covers the blueprint finalizer: the Registrar manages the
+    # finalizer via controllerutil.AddFinalizer/RemoveFinalizer + Client.Update
+    # on the object itself (internal/registrar/registrar.go), not a subresource.
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Blueprint status: the Registrar records publish status via Status().Update.
+  - apiGroups: ["krop.opendefense.cloud"]
+    resources: ["resourcegraphdefinitions/status"]
+    verbs: ["get", "update", "patch"]
+
+  # --- kcp apis group: blueprint -> published API --------------------------
+  # The Registrar creates the compiled APIResourceSchema and lists APIBindings
+  # to resolve claim identity hashes (internal/registrar/publish.go).
+  - apiGroups: ["apis.kcp.io"]
+    resources: ["apiresourceschemas"]
+    verbs: ["create", "get", "list", "watch"]
+  - apiGroups: ["apis.kcp.io"]
+    resources: ["apibindings"]
+    verbs: ["get", "list", "watch"]
+  # The controller auto-discovers the APIExportEndpointSlice to find the
+  # virtual-workspace URL (internal/kcp/endpointslice.go).
+  - apiGroups: ["apis.kcp.io"]
+    resources: ["apiexportendpointslices"]
+    verbs: ["get", "list", "watch"]
+  # The Registrar server-side-applies the APIExport (Client.Apply => create on
+  # first apply, patch thereafter) with its compiled permissionClaims.
+  #
+  # SCOPING: the export name is derived from the blueprint at runtime (e.g.
+  # kubernetesclusters.krop.opendefense.cloud), so it is not known at apply
+  # time. Once the export names are known for a deployment, TIGHTEN the two
+  # rules below with `resourceNames: [<export-name>, ...]` (create needs the
+  # unscoped rule; get/list/watch/update/patch can be name-scoped). Left
+  # unscoped here so a fresh install can publish any blueprint's export.
+  - apiGroups: ["apis.kcp.io"]
+    resources: ["apiexports"]
+    verbs: ["create", "get", "list", "watch", "update", "patch"]
+
+  # --- PROVIDER-TARGET children (DEPLOYMENT-SPECIFIC) ----------------------
+  # The engine writes provider-target children (annotation
+  # krop.opendefense.cloud/target: provider) into THIS workspace with the
+  # controller's own identity — same ownership domain, no permissionClaim
+  # (design §9). These GVKs are defined by the operator's blueprints and are
+  # therefore NOT knowable at chart-install time.
+  #
+  # The rules below are an EXAMPLE matching krop's shipped example blueprint
+  # (config/kcp/examples/blueprint-kubernetescluster.yaml), which emits a
+  # fulfil.krop.opendefense.cloud/AgentRequest as its provider-target child.
+  #
+  # OPERATORS MUST replace/extend these with the EXACT provider-target GVKs
+  # their own blueprints emit. Do NOT substitute a `*`/`*` wildcard rule — that
+  # re-creates the broad grant this least-privilege model exists to remove.
+  - apiGroups: ["fulfil.krop.opendefense.cloud"]
+    resources: ["agentrequests"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  # Include core configmaps ONLY if a blueprint emits provider-target
+  # ConfigMaps. krop's example blueprint targets its ConfigMap at the CONSUMER
+  # (authorized via permissionClaim, not this rule); drop this rule if none of
+  # your blueprints write provider-target ConfigMaps.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: krop-controller-provider
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: krop-controller-provider
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: "${SA_IDENTITY}"
