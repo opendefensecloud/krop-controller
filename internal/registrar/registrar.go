@@ -56,8 +56,12 @@ type Registrar struct {
 	// Source builds a compiled graph from a kro RGD against the provider workspace.
 	Source *kropengine.EndpointGraphSource
 	// OnPublished is called after a successful publish so the supervisor can ensure
-	// an instance manager is running for this blueprint's export. May be nil.
-	OnPublished func(exportName string, instanceGVK schema.GroupVersionKind, g *graph.Graph)
+	// an instance manager is running for this blueprint's export. changed reports
+	// whether the served specHash actually differs from what was last published
+	// (true for a new blueprint or a spec edit, false for an unchanged resync), so
+	// the wiring can restart the manager only when the compiled graph changed. May
+	// be nil.
+	OnPublished func(exportName string, instanceGVK schema.GroupVersionKind, g *graph.Graph, changed bool)
 	// OnDeleted is called during finalizer-based teardown of a deleted blueprint so
 	// the supervisor can stop the export's instance manager. May be nil.
 	OnDeleted func(exportName string)
@@ -79,9 +83,25 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 	// finalizer so the API server can remove the object.
 	if !bp.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(bp, blueprintFinalizer) {
-			// Only the per-export manager is torn down here. Deleting the
-			// published APIExport / APIResourceSchema objects is deferred to the
-			// M5 garbage collector.
+			// The blueprint IS the offering: withdrawing it withdraws the published
+			// API. Cascade-delete the APIExport and its APIResourceSchema(s) from the
+			// provider workspace before releasing the finalizer (consumers still bound
+			// will lose the type — expected on blueprint withdrawal). Do this BEFORE
+			// dropping the finalizer so a failed delete requeues with the object (and
+			// our finalizer) still present. Deleting a blueprint with live instances
+			// is a provider decision: the instances are the consumers' to delete.
+			if bp.Status.ExportedAPI != "" {
+				if err := DeletePublishedAPI(ctx, r.Client, bp.Status.ExportedAPI); err != nil {
+					return reconcile.Result{}, err
+				}
+			}
+			// Purge the compiled-graph cache for this blueprint so its entry does not
+			// leak for the process lifetime.
+			if r.Cache != nil {
+				r.Cache.Delete(r.Workspace, bp.Name)
+			}
+			// Stop the per-export manager and purge the served-graph registry (the
+			// wired OnDeleted does both).
 			if r.OnDeleted != nil && bp.Status.ExportedAPI != "" {
 				r.OnDeleted(bp.Status.ExportedAPI)
 			}
@@ -107,6 +127,11 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 	if err != nil {
 		return r.fail(ctx, bp, "HashFailed", err)
 	}
+	// changed is true when the compiled graph we are about to serve differs from
+	// what was last published: a NEW blueprint has an empty ObservedSpecHash
+	// (changed → first start), a spec EDIT mints a new specHash (changed → restart),
+	// and an unchanged 5m resync leaves them equal (not changed → keep serving).
+	changed := bp.Status.ObservedSpecHash != specHash
 	g, ok := r.Cache.Get(r.Workspace, bp.Name, specHash)
 	if !ok {
 		rgd := &krov1alpha1.ResourceGraphDefinition{Spec: bp.Spec}
@@ -133,6 +158,13 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 		return r.fail(ctx, bp, "PublishFailed", err)
 	}
 	claims := DeriveClaims(ForeignConsumerGRs(g, instanceGR), identity)
+	// A foreign (non-core) claim with no identityHash would not authorize: the
+	// owning APIExport isn't bound in the provider workspace yet. Fail the publish
+	// rather than emit a silently-broken claim — the resync retries once the
+	// provider binds the foreign export.
+	if err := validateClaims(claims); err != nil {
+		return r.fail(ctx, bp, "ClaimIdentityUnresolved", err)
+	}
 
 	exportName := ars.Spec.Names.Plural + "." + ars.Spec.Group
 	if err := UpsertAPIExport(ctx, r.Client, exportName, ars, claims); err != nil {
@@ -145,7 +177,7 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 		Kind:    ars.Spec.Names.Kind,
 	}
 	if r.OnPublished != nil {
-		r.OnPublished(exportName, instanceGVK, g)
+		r.OnPublished(exportName, instanceGVK, g, changed)
 	}
 
 	// Re-Get the published APIExport to observe status.identityHash, which kcp

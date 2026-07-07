@@ -245,8 +245,11 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 			Workspace: providerPath.String(),
 			Cache:     registrar.NewGraphCache(),
 			Source:    graphSource,
-			OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph) {
+			OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, changed bool) {
 				registry.Set(exportName, servedGraph{graph: g, gvk: instanceGVK})
+				if changed {
+					sup.Stop(exportName)
+				}
 				sup.Ensure(rootCtx, exportName)
 			},
 		}
