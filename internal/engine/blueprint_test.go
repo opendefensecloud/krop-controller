@@ -25,7 +25,14 @@ func TestLoadExampleBlueprint(t *testing.T) {
 	if rgd.Spec.Schema.Kind != "KubernetesCluster" {
 		t.Fatalf("schema kind = %q, want KubernetesCluster", rgd.Spec.Schema.Kind)
 	}
-	if len(rgd.Spec.Resources) != 1 || rgd.Spec.Resources[0].ID != "config" {
-		t.Fatalf("want a single resource id=config, got %+v", rgd.Spec.Resources)
+	if len(rgd.Spec.Resources) != 2 {
+		t.Fatalf("want 2 resources, got %d", len(rgd.Spec.Resources))
+	}
+	ids := map[string]bool{}
+	for _, r := range rgd.Spec.Resources {
+		ids[r.ID] = true
+	}
+	if !ids["config"] || !ids["providerRecord"] {
+		t.Fatalf("want resources config+providerRecord, got %v", ids)
 	}
 }

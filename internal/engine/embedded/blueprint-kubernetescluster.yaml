@@ -25,3 +25,14 @@ spec:
             krop.opendefense.cloud/target: consumer
         data:
           region: ${schema.spec.region}
+    - id: providerRecord
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${schema.spec.region}-provider-record
+          namespace: default
+          annotations:
+            krop.opendefense.cloud/target: provider
+        data:
+          region: ${schema.spec.region}
