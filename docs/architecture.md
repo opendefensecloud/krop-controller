@@ -29,21 +29,26 @@ Contrast with vanilla kro:
 | --- | --- | --- |
 | API surface | Creates a local CRD + a per-RGD micro-controller | Publishes an **APIExport**; consumers get the type by **APIBinding** |
 | Tenancy | One manager binds one cluster/endpoint → one deployment per workspace | One manager per APIExport **virtual workspace** fans in *all* bound consumers |
-| Child placement | Applies every child into the single cluster it runs against | Routes each child to the **consumer** or **provider** workspace by annotation |
+| Child placement | Applies every child into the single cluster it runs against | Routes each resource to the **consumer** / **provider** workspace or the **host** cluster by a per-resource `target` field |
+| Inputs | Reads only what it creates | Also **reads** existing objects on any plane via `externalRef` (read-only, never created/GC'd) |
 | Apply / GC | ApplySet + dynamic client (single-cluster) | Server-side apply per target + label/finalizer/ownerRef GC + orphan sweep |
 
 What krop keeps from kro: the RGD authoring surface (`spec.schema` SimpleSchema
 shorthand, `spec.resources[]` with `readyWhen`/`includeWhen`/`forEach`/`${...}`
 CEL), the DAG builder and cycle check, the CEL type-checker and evaluator, and the
-client-free runtime that resolves desired objects and checks readiness. The
-blueprint spec is kro's `ResourceGraphDefinitionSpec` **verbatim** — the only krop
-extension is a per-resource routing annotation on each resource template
-(`krop.opendefense.cloud/target`), which krop reads and strips before apply so it
-never reaches kro or the applied object.
+client-free runtime that resolves desired objects and checks readiness. krop's
+blueprint spec is a **thin wrapper** over kro's `ResourceGraphDefinitionSpec`: it
+inlines kro's resource verbatim and adds exactly one krop-owned, enum-validated
+field per resource — `target` (`consumer` | `provider` | `host`). A build-time
+`ToKro()` conversion strips `target` into a routing map and hands the graph builder
+pristine kro types, so kro's builder/runtime never see the krop field. Resources
+may also be `externalRef` reads (kro-native) instead of `template` writes; krop
+reads those but never creates or GCs them.
 
 ## 2. Workspace topology
 
-krop spans three roles of kcp workspace:
+krop spans three roles of kcp workspace (plus, for the `host` target, a physical
+non-kcp cluster — see [three-plane composition](#three-plane-composition-target--externalref)):
 
 - **Provider workspace** — where the blueprint (`ResourceGraphDefinition`) is
   authored, where the `APIExport` + `APIResourceSchema` are published, where the
@@ -105,6 +110,53 @@ flowchart TB
   SW -->|reads| LR
 ```
 
+### Three-plane composition (`target` + `externalRef`)
+
+Beyond the two kcp write planes, a resource can route to a third — the physical
+**host** cluster the controller pod runs in (`target: host`) — and can be a
+**read-only `externalRef`** on any plane instead of a written `template`. Two
+orthogonal axes describe every resource:
+
+- **write planes** (`template` + `target`): `consumer` (tenant ws, via the vw +
+  accepted claim), `provider` (provider ws, controller identity), `host` (physical
+  cluster, in-cluster / `--host-kubeconfig` client).
+- **read plane** (`externalRef` + `target`): an existing object krop Gets/Lists but
+  never writes, on any of the three planes. Its observed status funnels into other
+  resources via `${id.status.x}` CEL.
+
+This is what turns krop into an api-syncagent-style bridge: pull an input from one
+plane and funnel it into a child on another. The canonical flow — read a **VPC**
+(consumer, read-only) and provision a **VM** into the **host** cluster wired to
+`${vpc.status.vpcId}`:
+
+```mermaid
+flowchart LR
+  subgraph consumer["Consumer workspace (READ plane)"]
+    VPC["VPC (externalRef)<br/>read-only claim: get/list/watch<br/>never created / GC'd"]
+  end
+  subgraph provider["Provider workspace (WRITE plane)"]
+    LR2["liveness record<br/>tracks provider + host child GVKs"]
+  end
+  subgraph host["Physical host cluster (WRITE plane)"]
+    VM["VM (template, target: host)<br/>collision-free name + GC labels"]
+  end
+
+  ENG(["Engine (client-free runtime)"])
+
+  VPC -->|Get → SetObserved| ENG
+  ENG -->|CEL: ${vpc.status.vpcId}| ENG
+  ENG -->|SSA via host client| VM
+  ENG -->|refresh| LR2
+  LR2 -.->|Sweeper reclaims host + provider children on mid-life unbind| VM
+```
+
+Routing is uniform: the same `target` field selects the plane for both `template`
+writes and `externalRef` reads. External nodes are never applied, labeled, owned,
+renamed, or recorded — so GC/prune/sweep skip them. Host children reuse the entire
+provider-target machinery (collision-free naming, GC labels, prune, orphan sweep)
+over a separate host client, so they are reclaimed the same way provider children
+are. See [decisions/0011-external-refs-and-host-target.md](decisions/0011-external-refs-and-host-target.md).
+
 ## 3. Components
 
 | Component | Package / key files | Responsibility |
@@ -112,7 +164,7 @@ flowchart TB
 | **Blueprint CRD** | `api/v1alpha1/` | Cluster-scoped `ResourceGraphDefinition` (shortName `rgd`) whose spec is kro's RGD spec verbatim plus a krop-owned `Status` (`ExportedAPI`, `IdentityHash`, `ObservedSpecHash`, conditions). |
 | **Registrar** | `internal/registrar/` | Watches blueprints; compiles each into a kro graph, mints the APIResourceSchema, derives permissionClaims, upserts the APIExport, writes status, and drives cascade-unpublish on delete. Owns the compiled-graph cache. |
 | **Supervisor** | `internal/supervisor/` | Owns one instance-serving multicluster manager per published APIExport: start in a goroutine with a cancellable context, restart on spec change, self-heal a crashed manager. |
-| **Engine** | `internal/engine/` | The client-free reconcile core: drives kro's runtime node-by-node, routes each child by target annotation, and owns all apply/observe I/O through the `Applier` decorator chain. |
+| **Engine** | `internal/engine/` | The client-free reconcile core: drives kro's runtime node-by-node, routes each resource by its `target` (via the build-time routing map), reads `externalRef` nodes through a `Reader`, and owns all apply/observe I/O through the `Applier` / `Reader` chains. |
 | **Reconciler** | `internal/controller/reconciler.go` | The dual-target instance reconcile: finalizer, engine drive, status projection + conditions, prune, and the liveness heartbeat. Shared by the deployed controller and the envtest suite. |
 | **Sweeper** | `internal/controller/sweeper.go` | Orphan GC: reclaims provider-target children of instances that unbound the APIExport mid-life, keyed off stale liveness records, with a startup grace period. |
 | **kcp helpers** | `internal/kcp/` | Workspace-scoped kubeconfig validation and `APIExportEndpointSlice` discovery. |
@@ -158,12 +210,18 @@ The engine never talks to a cluster directly. Each child is applied through an
 
 - **Consumer children:** `LabelingApplier( OwnerRefApplier( RecordingApplier( SSAApplier ) ) )`
 - **Provider children:** `LabelingApplier( QualifyingApplier( RecordingApplier( SSAApplier ) ) )`
+- **Host children:** `LabelingApplier( QualifyingApplier( RecordingApplier( SSAApplier ) ) )` over the **host client** (same chain as provider — collision-free names + GC labels — but targeting the physical host cluster; registered only when a host client is configured).
+
+`externalRef` nodes take **no** applier chain at all: they are read through a
+`Reader` (`ClientReader` per target — consumer via the vw, provider via the
+provider client, host via the host client), `SetObserved`, and readiness-checked,
+but never applied, labeled, owned, renamed, or recorded.
 
 | Decorator | Role |
 | --- | --- |
 | `LabelingApplier` | Stamps the GC-tracking labels (`instance-uid`, `consumer-cluster`, `blueprint`) so children are enumerable by label across workspaces. |
-| `OwnerRefApplier` | *Consumer only.* Sets an ownerReference to the instance — a GC backstop for kcp's per-workspace collector if the finalizer path is ever bypassed. Owner refs are workspace-local, so provider children cannot use it. |
-| `QualifyingApplier` | *Provider only.* Renames the child to a collision-free name (`ProviderChildName`) because many consumers' provider children share the one provider workspace. |
+| `OwnerRefApplier` | *Consumer only.* Sets an ownerReference to the instance — a GC backstop for kcp's per-workspace collector if the finalizer path is ever bypassed. Owner refs are workspace-local, so provider and host children cannot use it (they rely on labels + liveness sweep instead). |
+| `QualifyingApplier` | *Provider + host.* Renames the child to a collision-free name (`ProviderChildName`) because many consumers' provider/host children share the one provider workspace / host cluster. |
 | `RecordingApplier` | Innermost decorator: records each applied child's final identity (GVK/namespace/name, *after* rename + labels) into a per-target sink used for prune bookkeeping. |
 | `SSAApplier` | Server-side apply (field manager `krop-controller`, force ownership) **then a read-back Get**. The read-back is load-bearing: cross-target CEL observes a provider child's *status* to feed a downstream consumer child, and the apply result alone does not reflect status-subresource fields set by other controllers. |
 
@@ -236,8 +294,10 @@ sequenceDiagram
     alt dependency pending (ErrDataPending)
       Eng-->>Rec: Ready=false, Requeue, Complete=false
     else resolved
-      Eng->>Eng: route by target annotation, strip it
-      alt target = provider
+      Eng->>Eng: route by node's target (routing map)
+      alt externalRef node
+        Eng->>Eng: Reader.Get/List (never apply); NotFound ⇒ pend
+      else target = provider / host
         Eng->>PC: SSA (collision-free name) + read back status
       else target = consumer
         Eng->>CC: SSA (labels + ownerRef) + read back
@@ -323,11 +383,16 @@ workspace-scoped kubeconfig:
 - **Consumer workspaces:** *zero* standing RBAC. Consumer-target writes flow
   through the APIExport **virtual-workspace identity**, authorized only by the
   consumer's **accepted `permissionClaims`** — the claims the Registrar
-  auto-derives from the blueprint's consumer-target node GVRs. Revoking = deleting
-  the binding.
+  auto-derives from the blueprint's consumer-target node GVRs (full CRUD for
+  writable children, **read-only** `get,list,watch` for consumer `externalRef`
+  reads). Revoking = deleting the binding.
+- **Host cluster:** the `target: host` plane is **provider-managed** and outside
+  krop's least-privilege model — the chart ships no host ClusterRole; the host
+  client (in-cluster or `--host-kubeconfig`) uses whatever RBAC the provider grants
+  out-of-band. Nil host config ⇒ host target disabled (fail-closed).
 
-Provider-target children are written with the controller's own provider-workspace
-identity (same ownership domain, no claim needed).
+Provider- and host-target children are written with the controller's own /
+the host client (same ownership domain, no claim needed).
 
 Full detail — identity minting, RBAC fixtures, and the claim/acceptance handshake
 — is in [permissions.md](permissions.md).

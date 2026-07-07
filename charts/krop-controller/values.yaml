@@ -77,6 +77,29 @@ kcp:
     # -- Key within the Secret that holds the kubeconfig.
     key: "kubeconfig"
 
+# -- Host cluster wiring for the `host` routing target.
+#
+# Resources with `target: host` are written into the PHYSICAL host cluster the
+# controller pod runs in. By default (kubeconfigSecret.name empty) the binary
+# uses in-cluster config — the pod's own ServiceAccount against the cluster it
+# runs in — and NO --host-kubeconfig flag is rendered. When kubeconfigSecret.name
+# is set, the chart mounts that Secret at /etc/host-kubeconfig and renders
+# --host-kubeconfig=/etc/host-kubeconfig/<key> so the host target points at a
+# DISTINCT cluster (or an out-of-cluster/dev run).
+#
+# NOTE: host-cluster RBAC is the PROVIDER's responsibility and out of krop's
+# least-privilege scope — the in-cluster default needs NO host ClusterRole from
+# this chart (tier (e) in docs/permissions.md). If neither in-cluster config nor
+# this Secret yields a config, the host target is DISABLED and blueprints routing
+# to `host` fail loudly (fail-closed).
+hostKubeconfig:
+  kubeconfigSecret:
+    # -- Name of the Secret holding the host-cluster kubeconfig. Leave empty to
+    # use in-cluster config (the pod's own cluster) for the host target.
+    name: ""
+    # -- Key within the Secret that holds the host kubeconfig.
+    key: "kubeconfig"
+
 # -- Pod security context
 podSecurityContext:
   runAsNonRoot: true

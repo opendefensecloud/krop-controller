@@ -3,9 +3,9 @@
 A **blueprint** is a `krop.opendefense.cloud/v1alpha1 ResourceGraphDefinition`
 (RGD). You author one; krop compiles it into a bindable `APIExport` and reconciles
 the generated instance kind across every consumer that binds it. This page is the
-authoring reference: the RGD shape, krop's one addition (target routing), CEL,
-auto-derived permissionClaims, naming/pruning, schema evolution, and a fully
-annotated example.
+authoring reference: the RGD shape, krop's additions (the `target` routing field
+and `externalRef` reads), CEL, auto-derived permissionClaims, naming/pruning,
+schema evolution, and a fully annotated example.
 
 If you have not run the end-to-end walkthrough yet, do
 [getting-started.md](getting-started.md) first. For the internals, see
@@ -15,10 +15,12 @@ If you have not run the end-to-end walkthrough yet, do
 
 ## The `ResourceGraphDefinition` shape
 
-krop's RGD **is** [kro](https://kro.run)'s RGD, served under our own group. The
-`spec` is parsed into kro's type unchanged (`api/v1alpha1/resourcegraphdefinition_types.go`);
-routing lives in per-resource annotations, not in a forked schema. The object is
-**cluster-scoped** in the provider workspace.
+krop's RGD is [kro](https://kro.run)'s RGD wrapped in a thin krop spec: the
+`spec` is kro's `Schema` + `Resources`, and each resource inlines kro's resource
+verbatim plus **one** krop-owned field — `target`
+(`api/v1alpha1/resourcegraphdefinition_types.go`). A build-time `ToKro()`
+conversion strips `target` back into a routing map and hands the graph builder
+pristine kro types. The object is **cluster-scoped** in the provider workspace.
 
 ```yaml
 apiVersion: krop.opendefense.cloud/v1alpha1   # krop's group…
@@ -59,46 +61,138 @@ between nodes (kro builds and topologically orders it). Per-resource fields:
 | Field | Meaning |
 | --- | --- |
 | `id` | node identifier; also the CEL handle other nodes reference (`${config.status...}`) |
-| `template` | the child object to apply (any GVK; a full manifest with `${...}` CEL) |
+| `target` | **krop addition.** Which plane the node's object(s) route to: `consumer` (default) \| `provider` \| `host`. See [target routing](#the-target-routing-field) |
+| `template` | the child object to **write** (any GVK; a full manifest with `${...}` CEL). Mutually exclusive with `externalRef` |
+| `externalRef` | **read-only.** An existing object krop reads but never creates or GCs. Mutually exclusive with `template`. See [external references](#externalref-reading-objects-krop-does-not-own) |
 | `readyWhen` | CEL predicate(s) that must hold before the node counts as ready and dependents proceed |
 | `includeWhen` | CEL predicate(s) gating whether the node is created at all |
 | `forEach` | expand the node into one child per collection element |
 
-`readyWhen`/`includeWhen`/`forEach`/`${...}` are all standard kro semantics —
-krop does not change them.
+`readyWhen`/`includeWhen`/`forEach`/`${...}`/`template`/`externalRef` are all
+standard kro semantics — krop does not change them; `target` is krop's only added
+field.
 
 ---
 
-## The one krop addition: `target` routing
+## The `target` routing field
 
-krop resolves each child to a **workspace** using a single annotation on the
-resource's `template.metadata.annotations`:
+krop resolves each resource to a **plane** using a single per-resource `target`
+field (a sibling of `id`/`template`, **not** a template annotation):
 
 ```yaml
-metadata:
-  annotations:
-    krop.opendefense.cloud/target: consumer   # or: provider
+resources:
+  - id: config
+    target: consumer          # or: provider | host — omit for the consumer default
+    template: { ... }
 ```
 
-| Value | Where the child is written | Authorized by | Identity |
+| Value | Where the object is written / read | Authorized by | Identity |
 | --- | --- | --- | --- |
-| `consumer` (**default**, if the annotation is absent/empty) | the **consumer** (tenant) workspace | an **accepted** permissionClaim on the consumer's APIBinding | the APIExport **virtual-workspace** identity |
+| `consumer` (**default**, if `target` is absent/empty) | the **consumer** (tenant) workspace | an **accepted** permissionClaim on the consumer's APIBinding | the APIExport **virtual-workspace** identity |
 | `provider` | the **provider** workspace (`default` namespace) | the controller's own provider-workspace RBAC | the controller's **own** kcp identity |
+| `host` | the **physical host cluster** the controller runs in | RBAC in the host cluster (the provider's responsibility) | the in-cluster / `--host-kubeconfig` host client |
 
-`consumer` and `provider` are the only valid values; any other value is a graph
-build error (`internal/engine/route.go`). The annotation is **stripped before
-apply** so it never leaks onto the materialized object.
+`consumer`/`provider`/`host` are the only valid values; the CRD **enum-validates**
+`target` at apply time, and the engine re-checks it. `target` routes both
+`template` children (where they are written) and `externalRef` reads (which plane
+they are read from).
 
-**Why two targets.** A single instance often needs to write some state into the
-tenant's own workspace (things the tenant should see and the claim authorizes) and
-some state into the provider's back-office workspace (fulfilment requests the
-tenant should never touch). Consumer-target children are the tenant-visible face;
-provider-target children are the provider-side plumbing. See
-[decisions/0002-per-resource-target-annotation.md](decisions/0002-per-resource-target-annotation.md).
+**Why three targets.** A single instance often needs to write some state into the
+tenant's own workspace (things the tenant should see and the claim authorizes),
+some into the provider's back-office workspace (fulfilment requests the tenant
+should never touch), and — for the api-syncagent use case — some into the physical
+**host** cluster the controller runs in (real infrastructure like VMs). See
+[decisions/0011-external-refs-and-host-target.md](decisions/0011-external-refs-and-host-target.md).
 
-Provider-target children are in the **same ownership domain** as the controller,
-so they involve **no permissionClaim**. Consumer-target children cross a workspace
-boundary and therefore require the claim handshake below.
+Provider- and host-target children are in the **same ownership domain** as the
+controller (its own / the host client), so they involve **no permissionClaim**.
+Consumer-target children cross a workspace boundary and therefore require the claim
+handshake below. A `host`-routed resource fails loudly if the controller has no
+host client configured (fail-closed) — see
+[permissions.md](permissions.md#host-target-and-the-host-client).
+
+---
+
+## `externalRef`: reading objects krop does not own
+
+A resource can carry an `externalRef` **instead of** a `template` (the two are
+mutually exclusive, enforced by the CRD). An `externalRef` is an existing object
+that krop **reads but never creates, mutates, labels, owns, or garbage-collects**.
+Its observed `status`/`data` funnels into other resources via `${id.status.x}`
+CEL, exactly like a `template` node's observed object — so an external input on one
+plane can drive a written child on another.
+
+Two forms:
+
+```yaml
+# single — one object by name (NotFound ⇒ the instance pends until it appears)
+- id: vpc
+  target: consumer
+  externalRef:
+    apiVersion: net.example/v1
+    kind: VPC
+    metadata:
+      name: ${schema.spec.vpcName}      # CEL allowed in name/namespace/selector
+      namespace: default
+
+# collection — every object matching a label selector
+- id: peers
+  target: consumer
+  externalRef:
+    apiVersion: net.example/v1
+    kind: VPC
+    metadata:
+      namespace: default
+      selector:
+        matchLabels: { tier: shared }
+```
+
+`externalRef` reads honor `target` like any resource: a `consumer` external ref is
+read through the virtual workspace under a **read-only** permissionClaim
+(`get,list,watch`); a `provider`/`host` external ref is read with the controller's
+own / the host client (no claim). External refs are **never** pruned or swept —
+krop does not own them.
+
+> **Foreign-type invariant.** Reading a *foreign* (non-core) external CRD type
+> still requires that type's owning `APIExport` to be **bound in the provider
+> workspace** so its `identityHash` resolves — the same invariant that governs
+> foreign consumer-target writes. Core types (group `""`) need no binding. See
+> [permissions.md](permissions.md#external-refs-and-the-foreign-export-invariant).
+
+### Cross-plane example: VPC (read) → VM (host write)
+
+The motivating pattern: provision a VM into the **host** cluster that must live
+inside an existing **VPC** owned by the tenant. Declare the VPC as a consumer
+`externalRef`, read `${vpc.status.vpcId}`, and funnel it into a `host`-target VM
+`template`:
+
+```yaml
+resources:
+  # read-only: an existing VPC in the consumer workspace (never created/GC'd)
+  - id: vpc
+    target: consumer
+    externalRef:
+      apiVersion: net.example/v1
+      kind: VPC
+      metadata:
+        name: ${schema.spec.vpcName}
+        namespace: default
+  # written into the physical host cluster, wired to the VPC's observed id
+  - id: vm
+    target: host
+    template:
+      apiVersion: compute.example/v1
+      kind: VirtualMachine
+      metadata:
+        name: ${schema.spec.name}
+        namespace: default
+      spec:
+        vpcId: ${vpc.status.vpcId}         # cross-plane CEL: consumer read → host write
+```
+
+The `${vpc.status.vpcId}` reference makes `vm` depend on `vpc`; krop reads the VPC
+first, and if it (or its `status.vpcId`) is not present yet the VM **pends** —
+identical convergence to any cross-target CEL dependency.
 
 ---
 
@@ -131,10 +225,17 @@ a partially-converged instance never has its work reclaimed mid-flight — see
 ## Auto-derived permissionClaims
 
 You do **not** hand-write claims. The Registrar scans the blueprint's
-**consumer-target** children, and for every GroupResource that is *not* the
-instance's own type it emits one `permissionClaim` (verbs
-`get,list,watch,create,update,patch,delete`), sorted for stable publications
-(`internal/registrar/claims.go`). Those claims are published on the APIExport.
+**consumer-target** nodes and emits one `permissionClaim` per GroupResource that is
+*not* the instance's own type, with verbs split by what the node does:
+
+- **writable children** (`template`, consumer) → full CRUD
+  (`get,list,watch,create,update,patch,delete`);
+- **external refs** (`externalRef`, consumer) → **read-only**
+  (`get,list,watch`) — krop only ever reads them.
+
+Claims are sorted for stable publications (`internal/registrar/claims.go`) and
+published on the APIExport. Provider/host-target nodes get **no** claim (own /
+host client).
 
 Two rules follow from this:
 
@@ -145,7 +246,8 @@ Two rules follow from this:
    `test/fixtures/apibinding-kubernetescluster-noclaim.yaml`.
 
 2. **Foreign (non-core) consumer-target types must be bound in the provider
-   workspace.** A claim for a core type (group `""`, e.g. `configmaps`)
+   workspace** — whether they are writable children **or** external refs. A claim
+   for a core type (group `""`, e.g. `configmaps`)
    legitimately carries an empty identity hash. But a claim for a *foreign* group
    needs that group's `identityHash` to resolve — which requires the owning
    APIExport to be **bound in the provider workspace**. If it is not, publish
@@ -190,7 +292,8 @@ children are never reclaimed). This means:
 - A resource removed from the blueprint → its children are pruned.
 
 Pruning runs per target (consumer children in the consumer workspace, provider
-children in the provider workspace). See
+children in the provider workspace, host children in the host cluster).
+`externalRef` nodes are **never** pruned — krop does not own them. See
 [architecture.md](architecture.md#42-instance-reconcile-dual-target--cross-target-cel).
 
 ---
@@ -238,28 +341,26 @@ spec:
     # (1) PROVIDER-target child: written into the provider workspace by the
     #     controller's own identity; renamed collision-free; no permissionClaim.
     - id: agentRequest
+      target: provider
       template:
         apiVersion: fulfil.krop.opendefense.cloud/v1alpha1
         kind: AgentRequest
         metadata:
           name: ${schema.spec.region}-agent
           namespace: default
-          annotations:
-            krop.opendefense.cloud/target: provider
         spec:
           region: ${schema.spec.region}
     # (2) CONSUMER-target child (default): written into the consumer workspace
     #     through the APIExport vw, authorized by the accepted `configmaps` claim.
     #     Reads the PROVIDER child's status cross-target → PENDS until it is set.
     - id: config
+      target: consumer
       template:
         apiVersion: v1
         kind: ConfigMap
         metadata:
           name: ${schema.spec.region}-cluster-config
           namespace: default
-          annotations:
-            krop.opendefense.cloud/target: consumer
         data:
           region: ${schema.spec.region}
           token: ${agentRequest.status.token}       # cross-target CEL read
@@ -289,10 +390,14 @@ only covers this example's `AgentRequest`. Never widen it to `*`/`*`. See
 
 - [ ] `spec.schema` defines the instance `group`/`version`/`kind`, its input
       `spec`, and any `status` CEL projections.
-- [ ] Every resource has an `id`, a `template`, and (if not consumer) an explicit
-      `krop.opendefense.cloud/target: provider` annotation.
-- [ ] Every foreign consumer-target type's export is **bound in the provider
-      workspace** (else publish fails `ClaimIdentityUnresolved`).
+- [ ] Every resource has an `id`, exactly one of `template`/`externalRef`, and (if
+      not consumer) an explicit `target: provider` or `target: host`.
+- [ ] Every foreign consumer-target type's export (writable **or** external-ref)
+      is **bound in the provider workspace** (else publish fails
+      `ClaimIdentityUnresolved`).
+- [ ] If any resource routes to `host`, the controller has a host client
+      (in-cluster config or `--host-kubeconfig`) and the provider has granted it
+      host-cluster RBAC for those GVKs.
 - [ ] Every provider-target GVK has a least-privilege rule in
       `provider-rbac.yaml` (never `*`/`*`).
 - [ ] Every provider-target child CRD is **served in the provider workspace**

@@ -33,6 +33,9 @@ spec:
             {{- if .Values.controller.leaderElect }}
             - --leader-elect
             {{- end }}
+            {{- if .Values.hostKubeconfig.kubeconfigSecret.name }}
+            - --host-kubeconfig=/etc/host-kubeconfig/{{ .Values.hostKubeconfig.kubeconfigSecret.key }}
+            {{- end }}
             {{- with .Values.controller.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -73,11 +76,23 @@ spec:
               mountPath: /etc/kcp
               readOnly: true
             {{- end }}
-      {{- if .Values.kcp.kubeconfigSecret.name }}
+            {{- if .Values.hostKubeconfig.kubeconfigSecret.name }}
+            - name: host-kubeconfig
+              mountPath: /etc/host-kubeconfig
+              readOnly: true
+            {{- end }}
+      {{- if or .Values.kcp.kubeconfigSecret.name .Values.hostKubeconfig.kubeconfigSecret.name }}
       volumes:
+        {{- if .Values.kcp.kubeconfigSecret.name }}
         - name: kcp-kubeconfig
           secret:
             secretName: {{ .Values.kcp.kubeconfigSecret.name }}
+        {{- end }}
+        {{- if .Values.hostKubeconfig.kubeconfigSecret.name }}
+        - name: host-kubeconfig
+          secret:
+            secretName: {{ .Values.hostKubeconfig.kubeconfigSecret.name }}
+        {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

@@ -26,6 +26,21 @@ WARNING: no kcp kubeconfig Secret configured (kcp.kubeconfigSecret.name is empty
 
   The Secret is provided out-of-band and is NOT templated by this chart.
 {{- end }}
+{{- if .Values.hostKubeconfig.kubeconfigSecret.name }}
+
+host kubeconfig (host target):
+  Mounted from Secret {{ .Values.hostKubeconfig.kubeconfigSecret.name | quote }} at
+  /etc/host-kubeconfig/{{ .Values.hostKubeconfig.kubeconfigSecret.key }}
+  (--host-kubeconfig points at it). Resources with target: host are written into
+  that cluster. Grant the host client its RBAC out-of-band — this chart ships NO
+  host ClusterRole (host-cluster authorization is the provider's responsibility).
+{{- else }}
+
+host target:
+  No hostKubeconfig Secret configured; the host target uses in-cluster config (the
+  pod's own cluster) and needs NO host ClusterRole from this chart. If not running
+  in a pod, the host target is DISABLED and blueprints routing to host fail loudly.
+{{- end }}
 
 Authorization model (least-privilege):
 

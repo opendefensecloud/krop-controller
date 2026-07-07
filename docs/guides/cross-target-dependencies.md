@@ -40,25 +40,23 @@ spec:
       agentToken: ${agentRequest.status.token}      # projection of the provider child's live status
   resources:
     - id: agentRequest                                # PROVIDER-target child
+      target: provider
       template:
         apiVersion: fulfil.krop.opendefense.cloud/v1alpha1
         kind: AgentRequest
         metadata:
           name: ${schema.spec.region}-agent
           namespace: default
-          annotations:
-            krop.opendefense.cloud/target: provider
         spec:
           region: ${schema.spec.region}
     - id: config                                      # CONSUMER-target child
+      target: consumer
       template:
         apiVersion: v1
         kind: ConfigMap
         metadata:
           name: ${schema.spec.region}-cluster-config
           namespace: default
-          annotations:
-            krop.opendefense.cloud/target: consumer
         data:
           token: ${agentRequest.status.token}         # cross-target CEL read
 ```
@@ -132,6 +130,49 @@ kubectl --context ${CONSUMER_WORKSPACE} -n default get kubernetescluster demo \
 # agentToken=tok-demo-42
 # Ready=True
 ```
+
+---
+
+## Reading an input from another plane: `externalRef` → host write
+
+The same pend-until-ready machinery drives krop's api-syncagent pattern, where the
+input is not a child krop **writes** but an existing object it only **reads**. A
+resource declared with `externalRef` (instead of `template`) is read — never
+created or GC'd — and its observed status funnels into a written child on another
+plane exactly like `${agentRequest.status.token}` above.
+
+The motivating example: provision a **VM into the host cluster** that must live
+inside an existing **VPC** owned by the tenant. Read the VPC as a `consumer`
+external ref, funnel `${vpc.status.vpcId}` into a `host`-target VM:
+
+```yaml
+  resources:
+    - id: vpc                                         # READ-ONLY external ref (consumer plane)
+      target: consumer
+      externalRef:
+        apiVersion: net.example/v1
+        kind: VPC
+        metadata:
+          name: ${schema.spec.vpcName}
+          namespace: default
+    - id: vm                                          # HOST-target child (physical host cluster)
+      target: host
+      template:
+        apiVersion: compute.example/v1
+        kind: VirtualMachine
+        metadata:
+          name: ${schema.spec.name}
+          namespace: default
+        spec:
+          vpcId: ${vpc.status.vpcId}                  # cross-plane CEL: consumer read → host write
+```
+
+Convergence is identical to the token flow: `vm` depends on `vpc`, so krop reads
+the VPC first; until it (and its `status.vpcId`) exists the VM **pends**, and the
+VPC is never modified or deleted (it survives instance deletion — krop does not own
+it). For the field reference and the read-only-claim / host-client details, see
+[blueprints.md](../blueprints.md#externalref-reading-objects-krop-does-not-own) and
+[permissions.md](../permissions.md#host-target-and-the-host-client).
 
 ---
 
