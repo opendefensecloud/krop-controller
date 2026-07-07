@@ -177,7 +177,7 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		instGVK := schema.GroupVersionKind{Group: "krop.opendefense.cloud", Version: "v1alpha1", Kind: "KubernetesCluster"}
-		reconciler := &kropctrl.Reconciler{Graph: compiled, ProviderClient: providerClient, InstanceGVK: instGVK}
+		reconciler := &kropctrl.Reconciler{Graph: compiled, ProviderClient: providerClient, InstanceGVK: instGVK, BlueprintName: m2ExportName}
 
 		// In-process manager against the APIExport virtual workspace.
 		p, err := apiexport.New(providerConfig, m2ExportName, apiexport.Options{Scheme: scheme.Scheme})

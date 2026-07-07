@@ -239,6 +239,7 @@ func run() error {
 			Graph:          sb.graph,
 			ProviderClient: providerClient,
 			InstanceGVK:    sb.gvk,
+			BlueprintName:  exportName,
 		}
 
 		reconcileFn := mcreconcile.Func(func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {

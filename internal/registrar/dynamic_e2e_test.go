@@ -209,6 +209,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 				Graph:          sg.graph,
 				ProviderClient: providerClient,
 				InstanceGVK:    sg.gvk,
+				BlueprintName:  exportName,
 			}
 
 			if err := mcbuilder.ControllerManagedBy(imgr).
