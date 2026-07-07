@@ -22,6 +22,14 @@
 
 ---
 
+## Execution split: M4a / M4b
+
+This plan ships as two mergeable increments:
+- **M4a — Registrar publication:** Tasks 1, 2, 3, 4, 5, **5b**. Delivers the blueprint CRD and a Registrar that publishes a correct `APIExport` + `APIResourceSchema` + auto-derived `permissionClaims`, proven by a publication e2e (Task 5b) that asserts the generated objects — WITHOUT the dynamic instance-serving manager. Merges on its own.
+- **M4b — Dynamic serving:** Tasks 6, 7, 8. Adds the Supervisor + main.go wiring + the full blueprint→instance→children e2e.
+
+---
+
 ## File structure
 
 | File | Responsibility |
@@ -704,7 +712,46 @@ git add internal/registrar/publish.go internal/registrar/registrar.go
 git commit --no-verify -m "registrar: publish blueprint as APIExport+ARS with derived claims (M4)"
 ```
 
-**== CHECKPOINT: Registrar publication complete. Review before the dynamic supervisor. ==**
+---
+
+## Task 5b: Registrar publication e2e (M4a validation)
+
+**Files:**
+- Create: `test/fixtures/blueprint-kubernetescluster-rgd.yaml`
+- Create: `internal/registrar/publish_e2e_test.go`
+
+Proves M4a end-to-end against real kcp WITHOUT the supervisor: install the blueprint CRD + AgentRequest CRD in a provider workspace, run the Registrar once (direct-reconcile style — instantiate `&Registrar{...}` with a workspace client and `EndpointGraphSource`, call `Reconcile` directly, as access-operator's e2e drives reconcile), create a blueprint, and assert the published objects.
+
+- [ ] **Step 1: Write the blueprint fixture**
+
+`test/fixtures/blueprint-kubernetescluster-rgd.yaml` — a `krop.opendefense.cloud/v1alpha1 ResourceGraphDefinition` with the M3 cross-target body (provider `agentRequest` AgentRequest + consumer `config` ConfigMap reading `${agentRequest.status.token}`; instance status `configMapName` + `agentToken`). Reuse the body from `internal/engine/embedded/blueprint-kubernetescluster.yaml`, wrapped as `kind: ResourceGraphDefinition` under our group.
+
+- [ ] **Step 2: Write the publication e2e (envtest, package `registrar_test` or `controller_test`)**
+
+`BeforeAll` (reuse the envtest boot pattern from `internal/controller/suite_test.go` — either share it or add a local suite): create a provider workspace via `envtest.NewWorkspaceFixture`; apply the blueprint CRD (`config/crds/krop.opendefense.cloud_resourcegraphdefinitions.yaml`) and the AgentRequest CRD (`test/fixtures/crd-agentrequests.fulfil.krop.opendefense.cloud.yaml`); wait both Established. Build a workspace-scoped client + `EndpointGraphSource` against the provider workspace config. Construct `&registrar.Registrar{Client: wsClient, Workspace: providerPath.String(), Cache: registrar.NewGraphCache(), Source: graphSource}` (OnPublished nil for M4a). Create the blueprint via the client, then call `reg.Reconcile(ctx, reconcile.Request{NamespacedName: {Name: "kubernetescluster"}})`.
+
+Assertions (`Eventually`/direct):
+- An `apisv1alpha2.APIExport` named `kubernetesclusters.krop.opendefense.cloud` exists in the provider ws.
+- Its `spec.resources[0]` references an ARS named `v<hash>.kubernetesclusters.krop.opendefense.cloud`, and that `APIResourceSchema` exists with `spec.group == krop.opendefense.cloud`.
+- The ARS's instance schema declares `status.agentToken` AND `status.configMapName` (auto-generated from the blueprint — the M3 pruning drift cannot recur).
+- `spec.permissionClaims` contains `{group: "", resource: configmaps}` (auto-derived; core → empty identityHash).
+- The blueprint's `status.exportedAPI == kubernetesclusters.krop.opendefense.cloud` and `status.observedSpecHash` is set; Ready condition True.
+
+`t.Skip` unless `TEST_KCP_ASSETS`. Register `kropv1alpha1` + `apisv1alpha1` + `apisv1alpha2` + `apiextensionsv1` on the suite scheme.
+
+- [ ] **Step 3: Run hermetic then real**
+
+Hermetic: `go build ./... && go vet ./... && go test ./... 2>&1 | tail` → registrar e2e SKIPs.
+Real: `make bin/kcp`, `TEST_KCP_ASSETS=$(pwd)/bin go test ./internal/registrar/ -v -timeout 360s`. Report actual output. If the graph build fails (AgentRequest not discoverable), ensure the AgentRequest CRD is Established before `Reconcile`. Never weaken assertions.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add test/fixtures/blueprint-kubernetescluster-rgd.yaml internal/registrar/publish_e2e_test.go
+git commit --no-verify -m "registrar: publication e2e — blueprint auto-produces APIExport+ARS+claims (M4a)"
+```
+
+**== M4a COMPLETE (mergeable). M4b begins below. ==**
 
 ---
 
