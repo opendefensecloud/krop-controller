@@ -1,0 +1,9 @@
+# osv-scanner configuration for krop-controller.
+#
+# IgnoredVulns lists advisories that have been triaged and consciously suppressed
+# (e.g. the vulnerable package is not in our build graph, or no fixed release
+# exists yet). Each entry SHOULD carry an `ignoreUntil` date and a `reason` so
+# suppressions are revisited rather than left indefinitely. Keep this empty until
+# a real, triaged exception is needed.
+#
+# See https://google.github.io/osv-scanner/configuration/ for the format.
