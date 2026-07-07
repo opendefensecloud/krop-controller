@@ -50,3 +50,8 @@ spec:
                 configMapName is the name of the ConfigMap the controller materializes
                 in the consumer workspace for this instance.
               type: string
+            agentToken:
+              description: |-
+                agentToken is the token resolved from the provider-target
+                AgentRequest's status, propagated cross-target into the instance.
+              type: string
