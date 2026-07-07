@@ -1,0 +1,22 @@
+apiVersion: v2
+name: krop-controller
+description: >-
+  Helm chart for krop-controller - a kcp multicluster-runtime control plane that
+  watches ResourceGraphDefinition blueprints in a provider workspace, compiles
+  each into an APIExport, and reconciles the generated instance kind across
+  consumer workspaces.
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://opendefense.cloud
+sources:
+  - https://github.com/opendefense/krop-controller
+maintainers:
+  - name: ODD Team
+    email: odd@opendefense.cloud
+keywords:
+  - kcp
+  - controller
+  - resourcegraphdefinition
+  - apiexport
+  - multicluster

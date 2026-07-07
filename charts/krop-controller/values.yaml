@@ -1,0 +1,111 @@
+# krop-controller Helm chart values
+
+# -- Image configuration for krop-controller
+image:
+  repository: ghcr.io/opendefense/krop-controller
+  # -- Overrides the image tag (default is the chart appVersion)
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# -- Image pull secrets (list of secret names)
+imagePullSecrets: []
+
+# -- Override the full name of resources
+fullnameOverride: ""
+
+# -- Override the chart name
+nameOverride: ""
+
+# -- Number of replicas. The controller does not currently run leader election
+# (see controller.leaderElect), so keep this at 1 for a single active manager.
+replicaCount: 1
+
+serviceAccount:
+  # -- Create a ServiceAccount for the controller
+  create: true
+  # -- Override the ServiceAccount name
+  name: ""
+  # -- Annotations for the ServiceAccount
+  annotations: {}
+
+rbac:
+  # -- Create the ClusterRole and ClusterRoleBinding for the provider-workspace
+  # operations + blueprint watch (see files/role.yaml).
+  create: true
+
+# -- Controller runtime configuration.
+#
+# NOTE: the current krop-controller binary does NOT register CLI flags for the
+# health-probe / metrics bind addresses or leader election — the manager
+# hardcodes the health probe endpoint at :8081 and does not run leader election.
+# The keys below are therefore configuration placeholders: healthProbeBindAddress
+# is used to derive the container/probe port, while metricsBindAddress and
+# leaderElect are reserved for when the binary grows the corresponding flags.
+# Passing them as args today would crash the container, so only `extraArgs` is
+# rendered into the container's args. Use `extraArgs` as the escape hatch for any
+# flags the binary actually accepts.
+controller:
+  # -- Health probe bind address. Used to derive the probe/container port.
+  healthProbeBindAddress: ":8081"
+  # -- Metrics bind address (reserved; not yet wired as a CLI flag).
+  metricsBindAddress: ":8080"
+  # -- Enable leader election (reserved; not yet wired as a CLI flag).
+  leaderElect: false
+  # -- Additional CLI args passed verbatim to the manager container.
+  extraArgs: []
+
+# -- kcp provider-workspace wiring.
+#
+# krop-controller connects to a kcp PROVIDER WORKSPACE via a workspace-scoped
+# kubeconfig. The binary calls ctrl.GetConfigOrDie(), which honors the KUBECONFIG
+# env var (and otherwise falls back to in-cluster / default config). For a real
+# kcp deployment you MUST point it at a workspace: provide a Secret (out-of-band)
+# containing a workspace-scoped kubeconfig and reference it here. When
+# kubeconfigSecret.name is set, the chart mounts that Secret at /etc/kcp and sets
+# KUBECONFIG=/etc/kcp/<key>. When empty, the controller runs with in-cluster /
+# default config (no mount) — which is NOT workspace-scoped and will fail the
+# binary's ValidateKubeconfig check against a real kcp front-proxy.
+kcp:
+  kubeconfigSecret:
+    # -- Name of the Secret holding the workspace-scoped kubeconfig. Leave empty
+    # to run with in-cluster/default config (not suitable for real kcp use).
+    name: ""
+    # -- Key within the Secret that holds the kubeconfig.
+    key: "kubeconfig"
+
+# -- Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  capabilities:
+    drop:
+      - ALL
+
+# -- Resource requests and limits
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 10m
+    memory: 128Mi
+
+# -- Node selector
+nodeSelector: {}
+
+# -- Tolerations
+tolerations: []
+
+# -- Affinity rules
+affinity: {}

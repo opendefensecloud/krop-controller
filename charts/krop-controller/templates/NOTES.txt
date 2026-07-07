@@ -1,0 +1,38 @@
+krop-controller has been deployed.
+
+Chart:   {{ .Chart.Name }}-{{ .Chart.Version }}
+Image:   {{ include "krop-controller.image" . }}
+Release: {{ .Release.Name }} (namespace {{ .Release.Namespace }})
+
+The controller runs a kcp multicluster-runtime manager over a PROVIDER
+WORKSPACE: it watches ResourceGraphDefinition blueprints, compiles each into an
+APIExport, and reconciles the generated instance kind across consumer workspaces.
+
+{{- if .Values.kcp.kubeconfigSecret.name }}
+
+kcp kubeconfig:
+  Mounted from Secret {{ .Values.kcp.kubeconfigSecret.name | quote }} at
+  /etc/kcp/{{ .Values.kcp.kubeconfigSecret.key }} (KUBECONFIG points at it).
+  Ensure that kubeconfig is scoped to the target provider workspace.
+{{- else }}
+
+WARNING: no kcp kubeconfig Secret configured (kcp.kubeconfigSecret.name is empty).
+  The controller will start with in-cluster/default config, which is NOT
+  workspace-scoped. For real kcp use, create a Secret containing a
+  workspace-scoped kubeconfig and set:
+
+    --set kcp.kubeconfigSecret.name=<secret-name>
+    (optionally --set kcp.kubeconfigSecret.key=<key>, default "kubeconfig")
+
+  The Secret is provided out-of-band and is NOT templated by this chart.
+{{- end }}
+
+{{- if not .Values.rbac.create }}
+
+NOTE: rbac.create=false — no ClusterRole/ClusterRoleBinding was created. Ensure
+  the ServiceAccount {{ include "krop-controller.serviceAccountName" . }} is
+  otherwise granted the provider-workspace permissions.
+{{- end }}
+
+The blueprint CRD (resourcegraphdefinitions.krop.opendefense.cloud) is installed
+from the chart's crds/ directory and must be present in the provider workspace.
