@@ -146,6 +146,52 @@ func TestPruneChildren_DeletesStaleKeepsApplied(t *testing.T) {
 	}
 }
 
+func TestLivenessRecord_WriteThenDelete(t *testing.T) {
+	provider := fake.NewClientBuilder().Build()
+	r := &Reconciler{
+		Graph:          graphWithConfigMapNode(), // consumer-target only → empty provider GVK list
+		ProviderClient: provider,
+		InstanceGVK:    testGVK,
+		BlueprintName:  "bp",
+	}
+
+	// Write creates the record with the expected labels + data.
+	if err := r.writeLivenessRecord(context.Background(), "cluster1", "uid-1"); err != nil {
+		t.Fatalf("writeLivenessRecord: %v", err)
+	}
+	name := kropengine.LivenessRecordName("cluster1", "uid-1")
+	rec := &unstructured.Unstructured{}
+	rec.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
+	if err := provider.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: name}, rec); err != nil {
+		t.Fatalf("record not created: %v", err)
+	}
+	if rec.GetLabels()[kropengine.LabelLiveness] != "true" {
+		t.Errorf("missing liveness label: %v", rec.GetLabels())
+	}
+	if rec.GetLabels()[kropengine.LabelInstanceUID] != "uid-1" {
+		t.Errorf("missing instance-uid label: %v", rec.GetLabels())
+	}
+	if last, _, _ := unstructured.NestedString(rec.Object, "data", "lastReconciled"); last == "" {
+		t.Error("lastReconciled not set")
+	}
+
+	// A second write updates (upserts), not errors.
+	if err := r.writeLivenessRecord(context.Background(), "cluster1", "uid-1"); err != nil {
+		t.Fatalf("second writeLivenessRecord: %v", err)
+	}
+
+	// Delete removes it; a second delete is a no-op (not-found ignored).
+	if err := r.deleteLivenessRecord(context.Background(), "cluster1", "uid-1"); err != nil {
+		t.Fatalf("deleteLivenessRecord: %v", err)
+	}
+	if err := provider.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: name}, rec); err == nil {
+		t.Fatal("record not deleted")
+	}
+	if err := r.deleteLivenessRecord(context.Background(), "cluster1", "uid-1"); err != nil {
+		t.Fatalf("deleteLivenessRecord on missing record should be nil: %v", err)
+	}
+}
+
 func TestReconcile_DeletionRemovesFinalizer_EmptyGraph(t *testing.T) {
 	inst := mkInstance("demo", true, kropengine.Finalizer)
 	consumer := fake.NewClientBuilder().WithObjects(inst).Build()

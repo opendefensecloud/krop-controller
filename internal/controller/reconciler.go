@@ -20,15 +20,25 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
+	"time"
 
 	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	kroruntime "github.com/kubernetes-sigs/kro/pkg/runtime"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 )
+
+// defaultRecordNamespace is the provider-workspace namespace holding liveness
+// records when Reconciler.RecordNamespace is unset.
+const defaultRecordNamespace = "default"
+
+// configMapGVK is the GVK of the liveness record (a plain ConfigMap).
+var configMapGVK = schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}
 
 // Reconciler drives one instance through the engine, applying consumer-target
 // children via the per-request consumer client and provider-target children via
@@ -43,6 +53,19 @@ type Reconciler struct {
 	// BlueprintName is the blueprint/export identifier stamped as the
 	// `blueprint` GC label on every materialized child.
 	BlueprintName string
+	// RecordNamespace is the provider-workspace namespace where the per-instance
+	// liveness record (a ConfigMap) is written. Defaults to "default" when empty.
+	RecordNamespace string
+}
+
+// recordNamespace returns the configured liveness-record namespace, or the
+// "default" fallback.
+func (r *Reconciler) recordNamespace() string {
+	if r.RecordNamespace != "" {
+		return r.RecordNamespace
+	}
+
+	return defaultRecordNamespace
 }
 
 // Reconcile fetches the instance via consumerClient, drives the engine with both
@@ -60,6 +83,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	if inst.GetDeletionTimestamp() != nil {
 		if slices.Contains(inst.GetFinalizers(), kropengine.Finalizer) {
 			if err := r.deleteChildren(ctx, consumerClient, string(inst.GetUID())); err != nil {
+				return kropengine.Result{}, err
+			}
+			// A normally-deleted instance must leave no liveness record behind,
+			// else the sweeper would eventually re-run child GC against an already
+			// GC'd instance (harmless, but noisy) or race the finalizer.
+			if err := r.deleteLivenessRecord(ctx, clusterName, string(inst.GetUID())); err != nil {
 				return kropengine.Result{}, err
 			}
 			inst.SetFinalizers(removeString(inst.GetFinalizers(), kropengine.Finalizer))
@@ -123,6 +152,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 		}); err != nil {
 			return res, err
 		}
+
+		// Refresh the provider-side liveness record: proof-of-life the orphan
+		// sweeper reconciles against when the consumer instance is no longer
+		// observable (mid-life APIExport unbind, idea.md §11). Written with the
+		// provider identity in the provider workspace, so it is visible to the
+		// sweeper even after the consumer disengages.
+		if err := r.writeLivenessRecord(ctx, clusterName, string(inst.GetUID())); err != nil {
+			return res, err
+		}
+
+		// Request a periodic requeue even on a fully-ready pass so the record
+		// keeps getting refreshed (its lastReconciled timestamp bounds staleness).
+		// The caller maps res.Requeue → RequeueAfter(requeueInterval); StaleAfter
+		// on the sweeper must comfortably exceed that interval (see Sweeper docs).
+		res.Requeue = true
 	}
 
 	if desired, perr := kropengine.ProjectStatus(rt); perr == nil {
@@ -216,6 +260,84 @@ func (r *Reconciler) childGVKs(target kropengine.Target) []schema.GroupVersionKi
 	}
 
 	return out
+}
+
+// writeLivenessRecord upserts the per-instance liveness ConfigMap in the
+// provider workspace. Its labels let the sweeper find it (and the child GVKs to
+// delete) without observing the consumer instance; its lastReconciled timestamp
+// bounds staleness. See the Sweeper doc comment for the full mechanism.
+func (r *Reconciler) writeLivenessRecord(ctx context.Context, clusterName, instanceUID string) error {
+	labels := map[string]string{
+		kropengine.LabelInstanceUID:     instanceUID,
+		kropengine.LabelConsumerCluster: clusterName,
+		kropengine.LabelBlueprint:       r.BlueprintName,
+		kropengine.LabelLiveness:        "true",
+	}
+	data := map[string]string{
+		"lastReconciled":    time.Now().UTC().Format(time.RFC3339),
+		"providerChildGVKs": r.providerChildGVKString(),
+	}
+
+	key := client.ObjectKey{Namespace: r.recordNamespace(), Name: kropengine.LivenessRecordName(clusterName, instanceUID)}
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(configMapGVK)
+	err := r.ProviderClient.Get(ctx, key, existing)
+	if apierrors.IsNotFound(err) {
+		cm := &unstructured.Unstructured{}
+		cm.SetGroupVersionKind(configMapGVK)
+		cm.SetNamespace(key.Namespace)
+		cm.SetName(key.Name)
+		cm.SetLabels(labels)
+		if serr := unstructured.SetNestedStringMap(cm.Object, data, "data"); serr != nil {
+			return fmt.Errorf("building liveness record: %w", serr)
+		}
+		if cerr := r.ProviderClient.Create(ctx, cm); cerr != nil {
+			return fmt.Errorf("creating liveness record %s: %w", key.Name, cerr)
+		}
+
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("getting liveness record %s: %w", key.Name, err)
+	}
+
+	existing.SetLabels(labels)
+	if serr := unstructured.SetNestedStringMap(existing.Object, data, "data"); serr != nil {
+		return fmt.Errorf("updating liveness record: %w", serr)
+	}
+	if uerr := r.ProviderClient.Update(ctx, existing); uerr != nil {
+		return fmt.Errorf("updating liveness record %s: %w", key.Name, uerr)
+	}
+
+	return nil
+}
+
+// deleteLivenessRecord removes the per-instance liveness ConfigMap. A missing
+// record is not an error (the reconciler may never have written one).
+func (r *Reconciler) deleteLivenessRecord(ctx context.Context, clusterName, instanceUID string) error {
+	cm := &unstructured.Unstructured{}
+	cm.SetGroupVersionKind(configMapGVK)
+	cm.SetNamespace(r.recordNamespace())
+	cm.SetName(kropengine.LivenessRecordName(clusterName, instanceUID))
+	if err := r.ProviderClient.Delete(ctx, cm); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("deleting liveness record %s: %w", cm.GetName(), err)
+	}
+
+	return nil
+}
+
+// providerChildGVKString serializes the provider-target child GVKs as a
+// comma-joined list of "group/version/Kind" tokens, so the sweeper knows what to
+// delete for an orphaned instance without re-deriving the graph. The core group
+// serializes with an empty first segment (e.g. "/v1/ConfigMap").
+func (r *Reconciler) providerChildGVKString() string {
+	gvks := r.childGVKs(kropengine.TargetProvider)
+	tokens := make([]string, 0, len(gvks))
+	for _, gvk := range gvks {
+		tokens = append(tokens, gvk.Group+"/"+gvk.Version+"/"+gvk.Kind)
+	}
+
+	return strings.Join(tokens, ",")
 }
 
 // removeString returns s without any occurrence of v.
