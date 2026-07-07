@@ -1,0 +1,27 @@
+# internal/engine/embedded/blueprint-kubernetescluster.yaml
+# Compiled-in copy (go:embed). Kept identical to config/kcp/examples/blueprint-kubernetescluster.yaml (the operator-facing copy) until M4 removes this embedded copy.
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: kubernetescluster
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: KubernetesCluster
+    group: krop.opendefense.cloud
+    spec:
+      region: string
+    status:
+      configMapName: ${config.metadata.name}
+  resources:
+    - id: config
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${schema.spec.region}-cluster-config
+          namespace: default
+          annotations:
+            krop.opendefense.cloud/target: consumer
+        data:
+          region: ${schema.spec.region}
