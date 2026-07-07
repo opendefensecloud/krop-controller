@@ -141,6 +141,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 		return res, err
 	}
 
+	// Refresh the provider-side liveness record on EVERY non-deleting pass that
+	// reached the apply loop — INCLUDING an incomplete (pending cross-target
+	// dependency) pass. This must be independent of res.Complete: the engine
+	// applies provider-target children BEFORE it early-returns on a pending
+	// consumer dependency (engine.Reconcile's GetDesired-pending path), so the
+	// provider AgentRequest is created immediately while the consumer child pends
+	// on ${agentRequest.status.token} for possibly minutes. Gating the record on
+	// res.Complete would leave that provider child with NO liveness record during
+	// the whole pending window; if the consumer unbinds the APIExport then, the
+	// orphan sweeper would have nothing to act on → permanent orphan (idea.md §11).
+	// The providerChildGVKs come from the graph, so they are known regardless of
+	// completeness. Only prune (below) stays gated on Complete. The record is a
+	// single Get+Create/Update upsert (see writeLivenessRecord).
+	if err := r.writeLivenessRecord(ctx, clusterName, string(inst.GetUID())); err != nil {
+		return res, err
+	}
+
 	// Prune ONLY after a complete pass: an incomplete (pending-dependency) pass
 	// applies just a prefix of the desired set, so pruning then would delete
 	// still-desired children it simply had not re-applied yet. The deletion path
@@ -152,22 +169,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 		}); err != nil {
 			return res, err
 		}
-
-		// Refresh the provider-side liveness record: proof-of-life the orphan
-		// sweeper reconciles against when the consumer instance is no longer
-		// observable (mid-life APIExport unbind, idea.md §11). Written with the
-		// provider identity in the provider workspace, so it is visible to the
-		// sweeper even after the consumer disengages.
-		if err := r.writeLivenessRecord(ctx, clusterName, string(inst.GetUID())); err != nil {
-			return res, err
-		}
-
-		// Request a periodic requeue even on a fully-ready pass so the record
-		// keeps getting refreshed (its lastReconciled timestamp bounds staleness).
-		// The caller maps res.Requeue → RequeueAfter(requeueInterval); StaleAfter
-		// on the sweeper must comfortably exceed that interval (see Sweeper docs).
-		res.Requeue = true
 	}
+
+	// Request a periodic requeue on every non-deleting apply pass: this ~30s
+	// requeue (the caller maps res.Requeue → RequeueAfter(requeueInterval)) is the
+	// LIVENESS HEARTBEAT that keeps the record's lastReconciled fresh. StaleAfter
+	// on the sweeper must stay >> this interval (see the Sweeper doc comment). An
+	// incomplete pass already sets Requeue for convergence; setting it here also
+	// covers the fully-ready complete pass so the heartbeat never stops.
+	res.Requeue = true
 
 	if desired, perr := kropengine.ProjectStatus(rt); perr == nil {
 		if status, found, _ := unstructured.NestedMap(desired.Object, "status"); found {
