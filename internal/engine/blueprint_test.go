@@ -32,7 +32,7 @@ func TestLoadExampleBlueprint(t *testing.T) {
 	for _, r := range rgd.Spec.Resources {
 		ids[r.ID] = true
 	}
-	if !ids["config"] || !ids["providerRecord"] {
-		t.Fatalf("want resources config+providerRecord, got %v", ids)
+	if !ids["config"] || !ids["agentRequest"] {
+		t.Fatalf("want resources config+agentRequest, got %v", ids)
 	}
 }
