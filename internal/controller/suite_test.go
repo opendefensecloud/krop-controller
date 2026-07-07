@@ -36,11 +36,10 @@ import (
 )
 
 // The in-process envtest suite boots a real kcp from the binary that
-// `make test` downloads (TEST_KCP_ASSETS points at bin/), then drives the M1
-// walking skeleton end-to-end inside a single real kcp workspace via a direct
-// reconcile (see m1_integration_test.go for why the virtual-workspace fan-in is
-// not exercised here). It skips cleanly when TEST_KCP_ASSETS is unset so plain
-// `go test ./...` stays hermetic.
+// `make test` downloads (TEST_KCP_ASSETS points at bin/), then drives the M2
+// dual-target reconcile end-to-end through the APIExport virtual workspace
+// (see dualtarget_test.go). It skips cleanly when TEST_KCP_ASSETS is unset so
+// plain `go test ./...` stays hermetic.
 var (
 	env       *envtest.Environment
 	kcpConfig *rest.Config
@@ -59,9 +58,9 @@ func init() {
 	runtime.Must(apiextensionsv1.AddToScheme(clientgoscheme.Scheme))
 }
 
-func TestM1Integration(t *testing.T) {
+func TestControllerIntegration(t *testing.T) {
 	if os.Getenv("TEST_KCP_ASSETS") == "" {
-		t.Skip("set TEST_KCP_ASSETS (make test downloads the kcp binary) to run the M1 envtest e2e")
+		t.Skip("set TEST_KCP_ASSETS (make test downloads the kcp binary) to run the controller envtest e2e")
 	}
 	RegisterFailHandler(Fail)
 
@@ -73,7 +72,7 @@ func TestM1Integration(t *testing.T) {
 	}
 	defer func() { _ = env.Stop() }()
 
-	RunSpecs(t, "M1 Instance Reconciler Integration Suite")
+	RunSpecs(t, "Controller Integration Suite")
 }
 
 var _ = BeforeSuite(func() {
