@@ -44,11 +44,13 @@ rules:
     verbs: ["get", "update", "patch"]
 
   # --- kcp apis group: blueprint -> published API --------------------------
-  # The Registrar creates the compiled APIResourceSchema and lists APIBindings
-  # to resolve claim identity hashes (internal/registrar/publish.go).
+  # The Registrar creates the compiled APIResourceSchema, gets it before create
+  # (immutable-if-served check), and deletes it on blueprint withdrawal (the
+  # finalizer's cascade-unpublish) — internal/registrar/publish.go. list/watch are
+  # kept for the manager's discovery/informer machinery over the apis group.
   - apiGroups: ["apis.kcp.io"]
     resources: ["apiresourceschemas"]
-    verbs: ["create", "get", "list", "watch"]
+    verbs: ["create", "get", "list", "watch", "delete"]
   - apiGroups: ["apis.kcp.io"]
     resources: ["apibindings"]
     verbs: ["get", "list", "watch"]
@@ -58,17 +60,22 @@ rules:
     resources: ["apiexportendpointslices"]
     verbs: ["get", "list", "watch"]
   # The Registrar server-side-applies the APIExport (Client.Apply => create on
-  # first apply, patch thereafter) with its compiled permissionClaims.
+  # first apply, patch thereafter) with its compiled permissionClaims, Gets it by
+  # name to read status.identityHash, and Deletes it on blueprint withdrawal. It
+  # never LISTs or WATCHes APIExports, so those verbs are omitted (delete is
+  # covered by the finalizer's cascade-unpublish, which reuses the SSA identity —
+  # kcp's APIExport delete is authorized by the same `update`/`delete` on the
+  # named object; `patch` remains for the SSA apply).
   #
   # SCOPING: the export name is derived from the blueprint at runtime (e.g.
   # kubernetesclusters.krop.opendefense.cloud), so it is not known at apply
   # time. Once the export names are known for a deployment, TIGHTEN the two
   # rules below with `resourceNames: [<export-name>, ...]` (create needs the
-  # unscoped rule; get/list/watch/update/patch can be name-scoped). Left
-  # unscoped here so a fresh install can publish any blueprint's export.
+  # unscoped rule; get/update/patch/delete can be name-scoped). Left unscoped
+  # here so a fresh install can publish any blueprint's export.
   - apiGroups: ["apis.kcp.io"]
     resources: ["apiexports"]
-    verbs: ["create", "get", "list", "watch", "update", "patch"]
+    verbs: ["create", "get", "update", "patch", "delete"]
   # The Supervisor serves instances THROUGH the published APIExport's virtual
   # workspace (the apiexport multicluster provider connects to the endpoint-slice
   # URL and reconciles the instance kind across every bound consumer). kcp's

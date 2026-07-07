@@ -250,6 +250,28 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 			return err != nil // still not found
 		}, 2*time.Second, 200*time.Millisecond).Should(BeTrue(), "consumer child must pend until provider status is set")
 
+		// C1 regression: at this point the provider AgentRequest exists but the
+		// consumer child still pends on the absent status.token, so the reconcile
+		// pass is INCOMPLETE (res.Complete==false). The liveness record MUST already
+		// have been written during this pending window — otherwise, if the consumer
+		// unbound the APIExport now, the orphan sweeper would have no record to act on
+		// and the provider AgentRequest would orphan forever (idea.md §11).
+		envtest.Eventually(GinkgoT(), func() (bool, string) {
+			got := &unstructured.Unstructured{}
+			got.SetGroupVersionKind(instance.GroupVersionKind())
+			if err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "demo"}, got); err != nil {
+				return false, err.Error()
+			}
+			recName := kropengine.LivenessRecordName(consumerWS.Spec.Cluster, string(got.GetUID()))
+			rec := &unstructured.Unstructured{}
+			rec.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
+			if err := cli.Cluster(providerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: recName}, rec); err != nil {
+				return false, "liveness record absent during pending window: " + err.Error()
+			}
+
+			return rec.GetLabels()[kropengine.LabelLiveness] == "true", "liveness record present but missing liveness label"
+		}, wait.ForeverTestTimeout, 200*time.Millisecond, "liveness record not written during pending (pre-Complete) pass")
+
 		// Simulate the downstream fulfilment controller: patch the AgentRequest status.
 		ar := &unstructured.Unstructured{}
 		ar.SetGroupVersionKind(schema.GroupVersionKind{Group: "fulfil.krop.opendefense.cloud", Version: "v1alpha1", Kind: "AgentRequest"})
@@ -280,5 +302,25 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 
 			return tok == "tok-xyz789", "status.agentToken=" + tok
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "instance status.agentToken not mapped")
+
+		// I2: the reconciler projects the engine Result as a Ready condition. This
+		// persists only if status.conditions is in the served schema (kcp prunes
+		// otherwise — the M3 agentToken bug). Asserting it here proves the served
+		// ARS carries conditions end-to-end, not just the in-memory set.
+		envtest.Eventually(GinkgoT(), func() (bool, string) {
+			got := &unstructured.Unstructured{}
+			got.SetGroupVersionKind(instance.GroupVersionKind())
+			if err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "demo"}, got); err != nil {
+				return false, err.Error()
+			}
+			conds, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+			for _, c := range conds {
+				if cm, ok := c.(map[string]any); ok && cm["type"] == "Ready" {
+					return true, ""
+				}
+			}
+
+			return false, "no Ready condition on instance status"
+		}, wait.ForeverTestTimeout, 200*time.Millisecond, "instance Ready condition not persisted (served schema pruned status.conditions?)")
 	})
 })

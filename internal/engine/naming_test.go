@@ -66,3 +66,27 @@ func TestProviderChildName_LongInputStaysDNSSafe(t *testing.T) {
 		t.Fatal("hashed form not deterministic")
 	}
 }
+
+// TestProviderChildName_NoSeparatorSeamOnTruncation exercises the M2 fix: when the
+// readable prefix is truncated at a length that lands right on a "-"/"." boundary,
+// the trailing separator must be trimmed so the joined name has no "--"/".-" seam
+// before the hash suffix (the seam is DNS-valid but unclean).
+func TestProviderChildName_NoSeparatorSeamOnTruncation(t *testing.T) {
+	// Craft an original name long enough to force truncation, whose byte at the
+	// truncation boundary is a separator. The prefix is "<cluster>-<instance>-<orig>";
+	// with cluster/instance short, the truncation index falls inside orig. Build orig
+	// as many "a" then a "-" exactly at the cut point.
+	suffixLen := 12 // hex suffix length used by ProviderChildName
+	cut := maxNameLen - 1 - suffixLen
+	cluster, instance := "c", "i"
+	prefixHead := len(cluster) + 1 + len(instance) + 1 // "c-i-"
+	// Make orig so that base[cut-1] (last kept byte) is a '-' or '.'.
+	orig := strings.Repeat("a", cut-prefixHead-1) + "-" + strings.Repeat("b", 50)
+	got := ProviderChildName(cluster, instance, orig)
+	if strings.Contains(got, "--") || strings.Contains(got, ".-") {
+		t.Fatalf("derived name has a separator seam: %q", got)
+	}
+	if len(got) > maxNameLen {
+		t.Fatalf("name too long: %d", len(got))
+	}
+}

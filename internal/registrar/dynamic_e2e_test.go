@@ -23,54 +23,31 @@ package registrar_test
 // (accepting the auto-derived configmaps claim) → creating an instance
 // materializes the dual-target + cross-target children.
 //
-// The wiring MIRRORS cmd/controller/main.go: a thread-safe registry the
-// Registrar's OnPublished populates, a supervisor.New(startFn) whose startFn
-// discovers the endpoint slice, builds an apiexport provider + manager, and
-// registers the shared controller.Reconciler with the cached graph. The only
-// difference from production is that the Registrar is direct-reconciled once
-// (instead of run under a full controller-runtime manager) — but that direct
-// call MUST drive the real OnPublished → supervisor.Ensure → startFn chain, so
-// the instance manager is auto-started by the Supervisor, not hand-wired.
+// The wiring lives in dynamicHarness (dynamic_harness_test.go), which MIRRORS
+// cmd/controller/main.go. The only difference from production is that the Registrar
+// is direct-reconciled once (instead of run under a full controller-runtime
+// manager) — but that direct call drives the real OnPublished → supervisor.Ensure
+// → startFn chain, so the instance manager is auto-started by the Supervisor.
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kcp-dev/logicalcluster/v3"
-	"github.com/kcp-dev/multicluster-provider/apiexport"
 	clusterclient "github.com/kcp-dev/multicluster-provider/client"
 	"github.com/kcp-dev/multicluster-provider/envtest"
-	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
-	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
-	"github.com/kcp-dev/sdk/apis/core"
-	corev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
-	tenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/util/yaml"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
-	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
-	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	kropctrl "go.opendefense.cloud/krop-controller/internal/controller"
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
-	kropkcp "go.opendefense.cloud/krop-controller/internal/kcp"
-	"go.opendefense.cloud/krop-controller/internal/registrar"
-	"go.opendefense.cloud/krop-controller/internal/supervisor"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -123,179 +100,33 @@ func applyFileSubst(ctx context.Context, cli clusterclient.ClusterClient, wsPath
 	Expect(cli.Cluster(wsPath).Create(ctx, u)).To(Succeed())
 }
 
+// kubernetesClusterHarnessOptions is the shared harness config for the
+// KubernetesCluster blueprint (capstone, orphan-sweep, spec-change specs).
+func kubernetesClusterHarnessOptions() harnessOptions {
+	return harnessOptions{
+		blueprintFile: blueprintPath,
+		blueprintObj:  "kubernetescluster",
+		exportName:    expectedExportName,
+		instanceGVK:   schema.GroupVersionKind{Group: "krop.opendefense.cloud", Version: "v1alpha1", Kind: "KubernetesCluster"},
+		instanceList:  schema.GroupVersionKind{Group: "krop.opendefense.cloud", Version: "v1alpha1", Kind: "KubernetesClusterList"},
+		bindingFile:   bindingPath,
+		bindingName:   "kubernetesclusters",
+	}
+}
+
 var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 	var (
-		ctx          = context.Background()
-		cli          clusterclient.ClusterClient
-		providerPath logicalcluster.Path
-		consumerPath logicalcluster.Path
-		consumerWS   *tenancyv1alpha1.Workspace
-		rootCtx      context.Context
-		cancel       context.CancelFunc
-		sup          *supervisor.Supervisor
+		ctx = context.Background()
+		h   *dynamicHarness
 	)
 
 	BeforeAll(func() {
-		var err error
-		cli, err = clusterclient.New(kcpConfig, client.Options{Scheme: clientgoscheme.Scheme})
-		Expect(err).NotTo(HaveOccurred())
-
-		// 1. Provider workspace + blueprint/AgentRequest CRDs (both Established
-		//    before the graph build so kro can type-check ${agentRequest.status.token}).
-		_, providerPath = envtest.NewWorkspaceFixture(GinkgoT(), cli, core.RootCluster.Path(), envtest.WithNamePrefix("krop-provider"))
-		applyFile(ctx, cli, providerPath, rgdCRDPath)
-		applyFile(ctx, cli, providerPath, agentCRDPath)
-		waitCRDEstablished(ctx, cli, providerPath, "resourcegraphdefinitions.krop.opendefense.cloud")
-		waitCRDEstablished(ctx, cli, providerPath, "agentrequests.fulfil.krop.opendefense.cloud")
-
-		// 2. Provider-workspace-scoped config + client + graph source.
-		cfg := rest.CopyConfig(kcpConfig)
-		cfg.Host += providerPath.RequestPath()
-		providerClient, err := client.New(cfg, client.Options{Scheme: clientgoscheme.Scheme})
-		Expect(err).NotTo(HaveOccurred())
-		graphSource, err := kropengine.NewEndpointGraphSource(cfg)
-		Expect(err).NotTo(HaveOccurred())
-
-		// 3. Wire the REAL dynamic path (mirror cmd/controller/main.go).
-		rootCtx, cancel = context.WithCancel(ctx)
-		registry := &graphRegistry{m: map[string]servedGraph{}}
-
-		startFn := func(ctx context.Context, exportName string) error {
-			sg, ok := registry.Get(exportName)
-			if !ok {
-				return fmt.Errorf("no served graph recorded for export %q", exportName)
-			}
-
-			// The endpoint slice is auto-created shortly after the APIExport is
-			// published (and its URL only populates once a binding consumes it);
-			// poll until FindEndpointSlice resolves.
-			var sliceName string
-			if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 30*time.Second, true,
-				func(ctx context.Context) (bool, error) {
-					name, ferr := kropkcp.FindEndpointSlice(ctx, providerClient, exportName)
-					if ferr != nil {
-						return false, nil
-					}
-					sliceName = name
-
-					return true, nil
-				}); err != nil {
-				return fmt.Errorf("waiting for APIExportEndpointSlice for %q: %w", exportName, err)
-			}
-
-			// Instance-serving scheme (mirror main.go): the instance kind is
-			// unstructured, but the apiexport provider reads APIBinding /
-			// LogicalCluster / Workspace off the virtual workspace.
-			instanceScheme := runtime.NewScheme()
-			for _, add := range []func(*runtime.Scheme) error{
-				clientgoscheme.AddToScheme,
-				apisv1alpha1.AddToScheme,
-				corev1alpha1.AddToScheme,
-				tenancyv1alpha1.AddToScheme,
-			} {
-				if err := add(instanceScheme); err != nil {
-					return fmt.Errorf("registering instance scheme: %w", err)
-				}
-			}
-
-			provider, err := apiexport.New(cfg, sliceName, apiexport.Options{Scheme: instanceScheme})
-			if err != nil {
-				return fmt.Errorf("constructing apiexport provider for %q: %w", exportName, err)
-			}
-			imgr, err := mcmanager.New(cfg, provider, mcmanager.Options{Scheme: instanceScheme})
-			if err != nil {
-				return fmt.Errorf("setting up instance manager for %q: %w", exportName, err)
-			}
-
-			reconciler := &kropctrl.Reconciler{
-				Graph:          sg.graph,
-				ProviderClient: providerClient,
-				InstanceGVK:    sg.gvk,
-				BlueprintName:  exportName,
-			}
-
-			if err := mcbuilder.ControllerManagedBy(imgr).
-				Named("krop-instance-" + exportName).
-				For(newInstanceObj(sg.gvk)).
-				Complete(mcreconcile.Func(func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-					cl, err := imgr.GetCluster(ctx, req.ClusterName)
-					if err != nil {
-						return ctrl.Result{}, err
-					}
-					res, err := reconciler.Reconcile(ctx, cl.GetClient(), string(req.ClusterName), req.NamespacedName)
-					if err != nil {
-						return ctrl.Result{}, err
-					}
-					if res.Requeue {
-						return ctrl.Result{RequeueAfter: time.Second}, nil
-					}
-
-					return ctrl.Result{}, nil
-				})); err != nil {
-				return fmt.Errorf("building krop-instance controller for %q: %w", exportName, err)
-			}
-
-			return imgr.Start(ctx)
-		}
-
-		sup = supervisor.New(startFn)
-
-		reg := &registrar.Registrar{
-			Client:    providerClient,
-			Workspace: providerPath.String(),
-			Cache:     registrar.NewGraphCache(),
-			Source:    graphSource,
-			OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph) {
-				registry.Set(exportName, servedGraph{graph: g, gvk: instanceGVK})
-				sup.Ensure(rootCtx, exportName)
-			},
-		}
-
-		// 4. Author the blueprint in the provider workspace (cluster-scoped).
-		applyFile(ctx, cli, providerPath, blueprintPath)
-
-		// 5. Drive publication via a single DIRECT reconcile — this MUST trigger the
-		//    real OnPublished → supervisor.Ensure → startFn chain, so the instance
-		//    manager is auto-started by the Supervisor.
-		_, err = reg.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "kubernetescluster"}})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(sup.Running(expectedExportName)).To(BeTrue(), "supervisor must have auto-started the instance manager for the published export")
-
-		// 6. Consumer workspace + APIBinding to the AUTO-PUBLISHED export, accepting
-		//    the auto-derived configmaps permissionClaim. Created BEFORE the endpoint
-		//    slice URL populates (bind-first rule); the startFn's FindEndpointSlice
-		//    retry engages the consumer cluster once the binding populates the slice.
-		consumerWS, consumerPath = envtest.NewWorkspaceFixture(GinkgoT(), cli, core.RootCluster.Path(), envtest.WithNamePrefix("krop-consumer"))
-		applyFileSubst(ctx, cli, consumerPath, bindingPath, map[string]string{"PROVIDER_PATH": providerPath.String()})
-
-		// Wait for the binding to bind and the instance kind to be List-able in the
-		// consumer workspace (this also refreshes the client's RESTMapper).
-		envtest.Eventually(GinkgoT(), func() (bool, string) {
-			binding := &apisv1alpha2.APIBinding{}
-			if err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Name: "kubernetesclusters"}, binding); err != nil {
-				return false, err.Error()
-			}
-			if binding.Status.Phase != apisv1alpha2.APIBindingPhaseBound {
-				return false, "binding phase " + string(binding.Status.Phase)
-			}
-
-			return true, ""
-		}, wait.ForeverTestTimeout, 200*time.Millisecond, "consumer APIBinding not Bound")
-
-		envtest.Eventually(GinkgoT(), func() (bool, string) {
-			list := &unstructured.UnstructuredList{}
-			list.SetGroupVersionKind(schema.GroupVersionKind{Group: "krop.opendefense.cloud", Version: "v1alpha1", Kind: "KubernetesClusterList"})
-			if err := cli.Cluster(consumerPath).List(ctx, list); err != nil {
-				return false, err.Error()
-			}
-
-			return true, ""
-		}, wait.ForeverTestTimeout, 200*time.Millisecond, "KubernetesCluster type not served in consumer workspace")
+		h = startDynamicHarness(ctx, kubernetesClusterHarnessOptions())
 	})
 
 	AfterAll(func() {
-		if cancel != nil {
-			cancel()
+		if h != nil {
+			h.cancel()
 		}
 	})
 
@@ -306,16 +137,16 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 			"metadata": map[string]any{"name": "demo", "namespace": "default"},
 			"spec":     map[string]any{"region": "eu"},
 		}}
-		Expect(cli.Cluster(consumerPath).Create(ctx, instance)).To(Succeed())
+		Expect(h.cli.Cluster(h.consumerPath).Create(ctx, instance)).To(Succeed())
 
 		// The provider-target AgentRequest is created in the provider ws (collision-named).
-		agentName := kropengine.ProviderChildName(consumerWS.Spec.Cluster, "demo", "eu-agent")
+		agentName := kropengine.ProviderChildName(h.consumerWS.Spec.Cluster, "demo", "eu-agent")
 		agentKey := client.ObjectKey{Namespace: "default", Name: agentName}
 		agentGVK := schema.GroupVersionKind{Group: "fulfil.krop.opendefense.cloud", Version: "v1alpha1", Kind: "AgentRequest"}
 		envtest.Eventually(GinkgoT(), func() (bool, string) {
 			ar := &unstructured.Unstructured{}
 			ar.SetGroupVersionKind(agentGVK)
-			err := cli.Cluster(providerPath).Get(ctx, agentKey, ar)
+			err := h.cli.Cluster(h.providerPath).Get(ctx, agentKey, ar)
 
 			return err == nil, "agentrequest not created yet"
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "provider AgentRequest not created (instance manager not serving the consumer cluster?)")
@@ -324,7 +155,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 		Consistently(func() bool {
 			cm := &unstructured.Unstructured{}
 			cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
-			err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm)
+			err := h.cli.Cluster(h.consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm)
 
 			return err != nil
 		}, 2*time.Second, 200*time.Millisecond).Should(BeTrue(), "consumer child must pend until the provider status is set")
@@ -332,16 +163,16 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 		// Simulate the downstream fulfilment controller: patch the AgentRequest status.
 		ar := &unstructured.Unstructured{}
 		ar.SetGroupVersionKind(agentGVK)
-		Expect(cli.Cluster(providerPath).Get(ctx, agentKey, ar)).To(Succeed())
+		Expect(h.cli.Cluster(h.providerPath).Get(ctx, agentKey, ar)).To(Succeed())
 		Expect(unstructured.SetNestedField(ar.Object, "tok-xyz789", "status", "token")).To(Succeed())
-		Expect(cli.Cluster(providerPath).Status().Update(ctx, ar)).To(Succeed())
+		Expect(h.cli.Cluster(h.providerPath).Status().Update(ctx, ar)).To(Succeed())
 
 		// The consumer ConfigMap now appears with the propagated token — written
 		// THROUGH the auto-published vw, authorized by the auto-derived claim.
 		envtest.Eventually(GinkgoT(), func() (bool, string) {
 			cm := &unstructured.Unstructured{}
 			cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
-			if err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm); err != nil {
+			if err := h.cli.Cluster(h.consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm); err != nil {
 				return false, err.Error()
 			}
 			tok, _, _ := unstructured.NestedString(cm.Object, "data", "token")
@@ -353,7 +184,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 		envtest.Eventually(GinkgoT(), func() (bool, string) {
 			got := &unstructured.Unstructured{}
 			got.SetGroupVersionKind(instance.GroupVersionKind())
-			if err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "demo"}, got); err != nil {
+			if err := h.cli.Cluster(h.consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "demo"}, got); err != nil {
 				return false, err.Error()
 			}
 			tok, _, _ := unstructured.NestedString(got.Object, "status", "agentToken")
@@ -362,13 +193,13 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "instance status.agentToken not mapped")
 
 		// --- M5: delete the instance and assert cross-workspace GC ---
-		Expect(cli.Cluster(consumerPath).Delete(ctx, instance)).To(Succeed())
+		Expect(h.cli.Cluster(h.consumerPath).Delete(ctx, instance)).To(Succeed())
 
 		// Provider-target AgentRequest is deleted from the provider workspace.
 		envtest.Eventually(GinkgoT(), func() (bool, string) {
 			ar := &unstructured.Unstructured{}
 			ar.SetGroupVersionKind(agentGVK)
-			err := cli.Cluster(providerPath).Get(ctx, agentKey, ar)
+			err := h.cli.Cluster(h.providerPath).Get(ctx, agentKey, ar)
 
 			return apierrors.IsNotFound(err), "agentrequest still present"
 		}, wait.ForeverTestTimeout, 300*time.Millisecond, "provider AgentRequest not GC'd on instance delete")
@@ -377,7 +208,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 		envtest.Eventually(GinkgoT(), func() (bool, string) {
 			cm := &unstructured.Unstructured{}
 			cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
-			err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm)
+			err := h.cli.Cluster(h.consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm)
 
 			return apierrors.IsNotFound(err), "consumer ConfigMap still present"
 		}, wait.ForeverTestTimeout, 300*time.Millisecond, "consumer ConfigMap not GC'd on instance delete")
@@ -386,7 +217,7 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 		envtest.Eventually(GinkgoT(), func() (bool, string) {
 			got := &unstructured.Unstructured{}
 			got.SetGroupVersionKind(instance.GroupVersionKind())
-			err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "demo"}, got)
+			err := h.cli.Cluster(h.consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "demo"}, got)
 
 			return apierrors.IsNotFound(err), "instance still present (finalizer not removed)"
 		}, wait.ForeverTestTimeout, 300*time.Millisecond, "instance not GC'd after finalizer removal")

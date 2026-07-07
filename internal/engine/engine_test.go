@@ -17,10 +17,13 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
 	"github.com/kubernetes-sigs/kro/pkg/graph"
 	"github.com/kubernetes-sigs/kro/pkg/runtime"
+	"github.com/kubernetes-sigs/kro/pkg/testutil/generator"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -106,6 +109,62 @@ func TestReconcile_ProjectsInstanceStatus(t *testing.T) {
 	name, _, _ := unstructured.NestedString(desiredInstance.Object, "status", "configMapName")
 	if name != "eu-cluster-config" {
 		t.Fatalf("status.configMapName = %q, want eu-cluster-config", name)
+	}
+}
+
+// brokenCELRGD has a consumer child whose desired-state CEL always fails at
+// evaluation with a genuine type-conversion error (int() of a non-numeric string)
+// — NOT a pending-dependency error. The graph still builds (the expression type-
+// checks: int(string) is a valid overload); it only errors at GetDesired.
+func brokenCELRGD() *krov1alpha1.ResourceGraphDefinition {
+	rgd := generator.NewResourceGraphDefinition(
+		"broken",
+		generator.WithSchema("Broken", "v1alpha1",
+			map[string]any{"region": "string"},
+			map[string]any{"x": "${config.metadata.name}"},
+		),
+		generator.WithResource("config", map[string]any{
+			"apiVersion": "v1", "kind": "ConfigMap",
+			"metadata": map[string]any{
+				"name":        "cfg",
+				"namespace":   "default",
+				"annotations": map[string]any{TargetAnnotation: string(TargetConsumer)},
+			},
+			// int("abc") is a runtime type-conversion error, not data-pending.
+			"data": map[string]any{"n": "${string(int(schema.spec.region))}"},
+		}, nil, nil),
+	)
+	rgd.Spec.Schema.Group = "krop.opendefense.cloud"
+
+	return rgd
+}
+
+// A genuine CEL evaluation error (not ErrDataPending) must be RETURNED as an
+// error so a broken blueprint surfaces instead of hot-looping silently (I1).
+func TestReconcile_GenuineGetDesiredError_IsReturned(t *testing.T) {
+	g := buildTestGraph(t, brokenCELRGD())
+	inst := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "krop.opendefense.cloud/v1alpha1", "kind": "Broken",
+		"metadata": map[string]any{"name": "demo", "namespace": "default"},
+		"spec":     map[string]any{"region": "abc"}, // int("abc") → type conversion error
+	}}
+	rt, err := runtime.FromGraph(g, inst, graph.RGDConfig{MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000})
+	if err != nil {
+		t.Fatalf("FromGraph: %v", err)
+	}
+
+	res, err := New().Reconcile(context.Background(), rt, map[Target]Applier{
+		TargetConsumer: &fakeApplier{}, TargetProvider: &fakeApplier{},
+	})
+	if err == nil {
+		t.Fatalf("want a hard error for a genuine CEL failure, got nil (res=%+v)", res)
+	}
+	if errors.Is(err, runtime.ErrDataPending) {
+		t.Fatalf("genuine CEL error must NOT be classified as ErrDataPending: %v", err)
+	}
+	// A hard error returns before Complete is set → nothing prunes.
+	if res.Complete {
+		t.Fatalf("want Complete=false on a hard error, got %+v", res)
 	}
 }
 

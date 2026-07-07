@@ -55,6 +55,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mccontroller "sigs.k8s.io/multicluster-runtime/pkg/controller"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -117,6 +118,13 @@ func (p *published) Set(export string, sb servedBlueprint) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.m[export] = sb
+}
+
+// Delete drops the served blueprint for export (blueprint withdrawal cleanup).
+func (p *published) Delete(export string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.m, export)
 }
 
 // version is the build version, injected at link time via
@@ -239,10 +247,10 @@ func run() error {
 	// registry the Registrar populates on publish. It blocks until ctx (the
 	// Supervisor's per-export context) is cancelled.
 	//
-	// M4b limitation: a live blueprint SPEC CHANGE keeps serving the OLD graph
-	// until this manager is restarted — the registry Set + supervisor Ensure are
-	// both no-ops while the manager runs, so the reconciler holds its original
-	// graph. Multi-version / hot-swap serving is deferred (see M4b notes).
+	// A live blueprint SPEC CHANGE is handled by OnPublished: on a changed
+	// specHash it Stops the running manager before Ensure restarts it, so this
+	// startFn re-reads the registry and picks up the new graph (registry.Set runs
+	// before the Stop+Ensure, so the restarted startFn observes the update).
 	startFn := func(ctx context.Context, exportName string) error {
 		exportLog := entryLog.WithValues("apiExport", exportName)
 
@@ -335,8 +343,18 @@ func run() error {
 			return ctrl.Result{}, nil
 		})
 
+		// A blueprint spec change restarts this per-export manager (Supervisor
+		// Stop+Ensure) with a fresh graph — re-running this builder under the SAME
+		// controller name. controller-runtime keeps a PROCESS-GLOBAL registry of
+		// controller names (to catch duplicate metric labels) with no deregistration
+		// on manager stop, so the second build would fail with "controller with name
+		// ... already exists". The old manager is fully cancelled before the new one
+		// serves, so the name reuse is intentional: skip the uniqueness check (the
+		// documented escape hatch for this pattern).
+		skipNameValidation := true
 		if err := mcbuilder.ControllerManagedBy(imgr).
 			Named("krop-instance-" + exportName).
+			WithOptions(mccontroller.Options{SkipNameValidation: &skipNameValidation}).
 			For(newInstance(sb.gvk)).
 			Complete(reconcileFn); err != nil {
 			return fmt.Errorf("building krop-instance controller for %q: %w", exportName, err)
@@ -359,13 +377,24 @@ func run() error {
 		Workspace: workspace,
 		Cache:     registrar.NewGraphCache(),
 		Source:    graphSource,
-		OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph) {
+		OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, changed bool) {
+			// Always update the served graph so a restarted startFn reads the latest.
 			registry.Set(exportName, servedBlueprint{graph: g, gvk: instanceGVK})
+			// When the compiled graph CHANGED (new blueprint or spec edit), stop the
+			// running manager first so Ensure restarts it and its reconciler closure
+			// re-reads the updated registry graph — otherwise a live spec edit would
+			// keep serving the OLD graph forever (Ensure is a no-op while running).
+			// Stop is safe even when nothing runs (first publish). Gate on changed so
+			// the 5m unchanged resync does NOT tear the manager down every 5 minutes.
+			if changed {
+				sup.Stop(exportName)
+			}
 			sup.Ensure(rootCtx, exportName)
 		},
 		OnDeleted: func(export string) {
 			if export != "" {
 				sup.Stop(export)
+				registry.Delete(export)
 			}
 		},
 	}

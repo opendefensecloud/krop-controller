@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 )
 
 // maxNameLen is the Kubernetes metadata.name length ceiling.
@@ -43,6 +44,11 @@ func ProviderChildName(clusterName, instanceName, originalName string) string {
 	// leave room for "-" + suffix; truncate the readable prefix if needed.
 	if len(base)+1+len(suffix) > maxNameLen {
 		base = base[:maxNameLen-1-len(suffix)]
+		// Truncation can sever the readable prefix mid-segment, leaving a trailing
+		// "-" or "." that would yield a "--"/".-" seam before the hash suffix. Both
+		// are DNS-valid (internal hyphens/dots are allowed), but trimming keeps the
+		// derived name clean and unambiguous.
+		base = strings.TrimRight(base, "-.")
 	}
 
 	return base + "-" + suffix

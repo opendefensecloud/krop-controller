@@ -53,18 +53,36 @@ import (
 // interval (the caller's requeueInterval) with margin, else a still-live instance
 // whose refresh merely lagged could be swept. See the SweepInterval/StaleAfter
 // consts in cmd/controller.
+//
+// STARTUP GRACE INVARIANT: sweeping only begins after a full StaleAfter grace
+// period has elapsed since process start (startedAt). On ANY controller restart /
+// redeploy / crashloop, every liveness record is already older than StaleAfter
+// while the controller is still rediscovering endpoint slices (up to ~30s each)
+// and re-reconciling every instance on its per-export workqueue to refresh its
+// record. Without the grace period the first tick would find the whole fleet
+// "stale" and destructively sweep provider children of STILL-LIVE, still-bound
+// instances (e.g. tearing down a real running agent). Deferring the first sweep
+// by StaleAfter guarantees every live instance has had a full StaleAfter window to
+// refresh its record after startup, so a fleet-wide catch-up cannot wrongly sweep.
+// This further requires StaleAfter to exceed the WORST-CASE per-instance catch-up
+// (endpoint-slice rediscovery + re-reconcile), not merely the ~30s heartbeat.
 type Sweeper struct {
 	// ProviderClient reads liveness records and deletes provider children in the
 	// provider workspace.
 	ProviderClient client.Client
 	// RecordNamespace holds the liveness records. Defaults to "default".
 	RecordNamespace string
-	// StaleAfter is the age past which a record's instance is deemed orphaned.
+	// StaleAfter is the age past which a record's instance is deemed orphaned. It
+	// also doubles as the startup grace period (see the STARTUP GRACE INVARIANT).
 	StaleAfter time.Duration
 	// SweepInterval is the tick period of the Start runnable loop.
 	SweepInterval time.Duration
 	// Clock is injectable for tests; defaults to time.Now.
 	Clock func() time.Time
+	// startedAt is the process/sweeper start time, used to enforce the startup
+	// grace period. It is set in Start, and lazily on the first Sweep if unset, so
+	// no sweep runs until now()-startedAt >= StaleAfter. Tests set it directly.
+	startedAt time.Time
 }
 
 // now returns the current time via the injected clock, or time.Now.
@@ -98,6 +116,10 @@ func (s *Sweeper) Start(ctx context.Context) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Anchor the startup grace period at process start: no sweep runs until a full
+	// StaleAfter has elapsed from here (see the STARTUP GRACE INVARIANT).
+	s.startedAt = s.now()
+
 	l.Info("starting orphan sweeper", "interval", interval, "staleAfter", s.StaleAfter, "namespace", s.recordNamespace())
 	for {
 		select {
@@ -118,6 +140,21 @@ func (s *Sweeper) Start(ctx context.Context) error {
 func (s *Sweeper) Sweep(ctx context.Context) error {
 	l := log.FromContext(ctx).WithName("orphan-sweeper")
 
+	now := s.now()
+	// Lazy-init the grace anchor for callers that invoke Sweep without Start.
+	if s.startedAt.IsZero() {
+		s.startedAt = now
+	}
+	// STARTUP GRACE: skip until a full StaleAfter window has elapsed since start,
+	// so a fleet-wide catch-up after a restart cannot wrongly sweep live instances
+	// whose records simply have not been refreshed yet (see the doc comment).
+	if now.Sub(s.startedAt) < s.StaleAfter {
+		l.V(1).Info("within startup grace period; skipping sweep",
+			"elapsed", now.Sub(s.startedAt).String(), "staleAfter", s.StaleAfter.String())
+
+		return nil
+	}
+
 	records := &unstructured.UnstructuredList{}
 	records.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMapList"})
 	if err := s.ProviderClient.List(ctx, records,
@@ -126,7 +163,6 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 		return fmt.Errorf("listing liveness records: %w", err)
 	}
 
-	now := s.now()
 	for i := range records.Items {
 		rec := &records.Items[i]
 		instanceUID := rec.GetLabels()[kropengine.LabelInstanceUID]

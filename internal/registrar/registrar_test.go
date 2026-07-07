@@ -18,6 +18,8 @@ import (
 	"context"
 	"testing"
 
+	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
+	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,10 +37,20 @@ import (
 // API server (here, the fake client) remove the object.
 func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 	scheme := runtime.NewScheme()
-	if err := kropv1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatalf("registering scheme: %v", err)
+	for _, add := range []func(*runtime.Scheme) error{
+		kropv1alpha1.AddToScheme,
+		apisv1alpha1.AddToScheme,
+		apisv1alpha2.AddToScheme,
+	} {
+		if err := add(scheme); err != nil {
+			t.Fatalf("registering scheme: %v", err)
+		}
 	}
 
+	const (
+		exportName = "widgets.example.com"
+		arsName    = "vdeadbeef.widgets.example.com"
+	)
 	now := metav1.Now()
 	bp := &kropv1alpha1.ResourceGraphDefinition{
 		ObjectMeta: metav1.ObjectMeta{
@@ -48,18 +60,32 @@ func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 			// still carries a finalizer, so seed it with ours.
 			Finalizers: []string{blueprintFinalizer},
 		},
-		Status: kropv1alpha1.BlueprintStatus{ExportedAPI: "widgets.example.com"},
+		Status: kropv1alpha1.BlueprintStatus{ExportedAPI: exportName},
 	}
+	// Seed the published APIExport (referencing its ARS) and the ARS itself, so the
+	// cascade-unpublish path can find and delete them.
+	export := &apisv1alpha2.APIExport{ObjectMeta: metav1.ObjectMeta{Name: exportName}}
+	export.Spec.Resources = []apisv1alpha2.ResourceSchema{{
+		Name:   "widgets",
+		Group:  "example.com",
+		Schema: arsName,
+	}}
+	ars := &apisv1alpha1.APIResourceSchema{ObjectMeta: metav1.ObjectMeta{Name: arsName}}
 
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(bp).
+		WithObjects(bp, export, ars).
 		WithStatusSubresource(&kropv1alpha1.ResourceGraphDefinition{}).
 		Build()
+
+	// A populated cache entry for this blueprint must be purged on delete.
+	cache := NewGraphCache()
 
 	var stopped []string
 	r := &Registrar{
 		Client:    c,
+		Workspace: "ws",
+		Cache:     cache,
 		OnDeleted: func(export string) { stopped = append(stopped, export) },
 	}
 
@@ -73,8 +99,16 @@ func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 		t.Fatalf("delete path should not requeue, got %+v", res)
 	}
 
-	if len(stopped) != 1 || stopped[0] != "widgets.example.com" {
-		t.Fatalf("OnDeleted expected [widgets.example.com], got %v", stopped)
+	if len(stopped) != 1 || stopped[0] != exportName {
+		t.Fatalf("OnDeleted expected [%s], got %v", exportName, stopped)
+	}
+
+	// The published APIExport and its ARS must be cascade-deleted.
+	if err := c.Get(context.Background(), types.NamespacedName{Name: exportName}, &apisv1alpha2.APIExport{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("APIExport %q should be deleted, got err=%v", exportName, err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: arsName}, &apisv1alpha1.APIResourceSchema{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("APIResourceSchema %q should be deleted, got err=%v", arsName, err)
 	}
 
 	// Removing the last finalizer while a DeletionTimestamp is set makes the fake

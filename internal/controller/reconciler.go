@@ -26,11 +26,27 @@ import (
 	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	kroruntime "github.com/kubernetes-sigs/kro/pkg/runtime"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
+)
+
+// Instance status condition types and reasons projected from the engine Result.
+const (
+	// conditionReady is True when every included node passed readiness.
+	conditionReady = "Ready"
+	// conditionProgressing is True while the instance is still converging
+	// (a dependency is pending or a child is not yet ready).
+	conditionProgressing = "Progressing"
+
+	reasonReady       = "Ready"
+	reasonProgressing = "Progressing"
+	reasonReconciled  = "Reconciled"
 )
 
 // defaultRecordNamespace is the provider-workspace namespace holding liveness
@@ -141,6 +157,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 		return res, err
 	}
 
+	// Refresh the provider-side liveness record on EVERY non-deleting pass that
+	// reached the apply loop — INCLUDING an incomplete (pending cross-target
+	// dependency) pass. This must be independent of res.Complete: the engine
+	// applies provider-target children BEFORE it early-returns on a pending
+	// consumer dependency (engine.Reconcile's GetDesired-pending path), so the
+	// provider AgentRequest is created immediately while the consumer child pends
+	// on ${agentRequest.status.token} for possibly minutes. Gating the record on
+	// res.Complete would leave that provider child with NO liveness record during
+	// the whole pending window; if the consumer unbinds the APIExport then, the
+	// orphan sweeper would have nothing to act on → permanent orphan (idea.md §11).
+	// The providerChildGVKs come from the graph, so they are known regardless of
+	// completeness. Only prune (below) stays gated on Complete. The record is a
+	// single Get+Create/Update upsert (see writeLivenessRecord).
+	if err := r.writeLivenessRecord(ctx, clusterName, string(inst.GetUID())); err != nil {
+		return res, err
+	}
+
 	// Prune ONLY after a complete pass: an incomplete (pending-dependency) pass
 	// applies just a prefix of the desired set, so pruning then would delete
 	// still-desired children it simply had not re-applied yet. The deletion path
@@ -152,31 +185,99 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 		}); err != nil {
 			return res, err
 		}
-
-		// Refresh the provider-side liveness record: proof-of-life the orphan
-		// sweeper reconciles against when the consumer instance is no longer
-		// observable (mid-life APIExport unbind, idea.md §11). Written with the
-		// provider identity in the provider workspace, so it is visible to the
-		// sweeper even after the consumer disengages.
-		if err := r.writeLivenessRecord(ctx, clusterName, string(inst.GetUID())); err != nil {
-			return res, err
-		}
-
-		// Request a periodic requeue even on a fully-ready pass so the record
-		// keeps getting refreshed (its lastReconciled timestamp bounds staleness).
-		// The caller maps res.Requeue → RequeueAfter(requeueInterval); StaleAfter
-		// on the sweeper must comfortably exceed that interval (see Sweeper docs).
-		res.Requeue = true
 	}
+
+	// Request a periodic requeue on every non-deleting apply pass: this ~30s
+	// requeue (the caller maps res.Requeue → RequeueAfter(requeueInterval)) is the
+	// LIVENESS HEARTBEAT that keeps the record's lastReconciled fresh. StaleAfter
+	// on the sweeper must stay >> this interval (see the Sweeper doc comment). An
+	// incomplete pass already sets Requeue for convergence; setting it here also
+	// covers the fully-ready complete pass so the heartbeat never stops.
+	res.Requeue = true
+
+	// Read the persisted conditions BEFORE projecting the CEL status: SetNestedMap
+	// below REPLACES the whole status object, which would otherwise drop the
+	// conditions (and reset their lastTransitionTime) every pass.
+	conditions := readConditions(inst)
 
 	if desired, perr := kropengine.ProjectStatus(rt); perr == nil {
 		if status, found, _ := unstructured.NestedMap(desired.Object, "status"); found {
 			_ = unstructured.SetNestedMap(inst.Object, status, "status")
-			_ = consumerClient.Status().Update(ctx, inst)
 		}
 	}
 
+	// Surface the engine Result as Ready/Progressing conditions so consumers can
+	// tell a converging instance from a wedged one. kro's SynthesizeCRD generates
+	// status.conditions into the served instance schema (statusFieldsOverride=true
+	// in kro's graph builder), so these persist through kcp's schema pruning.
+	applyResultConditions(&conditions, res, inst.GetGeneration())
+	_ = writeConditions(inst, conditions)
+	_ = consumerClient.Status().Update(ctx, inst)
+
 	return res, nil
+}
+
+// applyResultConditions updates the Ready and Progressing conditions in place
+// from the engine Result. Ready is True only when every node passed readiness;
+// Progressing is True while the instance is still converging.
+func applyResultConditions(conditions *[]metav1.Condition, res kropengine.Result, generation int64) {
+	ready := metav1.Condition{Type: conditionReady, ObservedGeneration: generation}
+	progressing := metav1.Condition{Type: conditionProgressing, ObservedGeneration: generation}
+	if res.Ready {
+		ready.Status = metav1.ConditionTrue
+		ready.Reason = reasonReady
+		ready.Message = "all resources are ready"
+		progressing.Status = metav1.ConditionFalse
+		progressing.Reason = reasonReconciled
+		progressing.Message = "reconcile complete"
+	} else {
+		ready.Status = metav1.ConditionFalse
+		ready.Reason = reasonProgressing
+		ready.Message = "waiting for resources to become ready"
+		progressing.Status = metav1.ConditionTrue
+		progressing.Reason = reasonProgressing
+		progressing.Message = "reconcile in progress"
+	}
+	meta.SetStatusCondition(conditions, ready)
+	meta.SetStatusCondition(conditions, progressing)
+}
+
+// readConditions extracts the instance's status.conditions as typed
+// metav1.Conditions. A missing or malformed slice yields nil (a fresh start).
+func readConditions(inst *unstructured.Unstructured) []metav1.Condition {
+	raw, found, err := unstructured.NestedSlice(inst.Object, "status", "conditions")
+	if !found || err != nil {
+		return nil
+	}
+	out := make([]metav1.Condition, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		var c metav1.Condition
+		if cerr := k8sruntime.DefaultUnstructuredConverter.FromUnstructured(m, &c); cerr != nil {
+			continue
+		}
+		out = append(out, c)
+	}
+
+	return out
+}
+
+// writeConditions writes the typed conditions back into the instance's
+// status.conditions as unstructured maps.
+func writeConditions(inst *unstructured.Unstructured, conditions []metav1.Condition) error {
+	raw := make([]any, 0, len(conditions))
+	for i := range conditions {
+		m, err := k8sruntime.DefaultUnstructuredConverter.ToUnstructured(&conditions[i])
+		if err != nil {
+			return fmt.Errorf("encoding condition: %w", err)
+		}
+		raw = append(raw, m)
+	}
+
+	return unstructured.SetNestedSlice(inst.Object, raw, "status", "conditions")
 }
 
 // deleteChildren deletes all children of the instance (by the instance-uid

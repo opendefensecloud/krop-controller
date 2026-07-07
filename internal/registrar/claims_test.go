@@ -17,6 +17,7 @@ package registrar
 import (
 	"testing"
 
+	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -44,5 +45,51 @@ func TestDeriveClaims_CoreAndForeign(t *testing.T) {
 	}
 	if byRes["scopes"] != "abc123hash" {
 		t.Fatalf("scopes identityHash = %q, want abc123hash", byRes["scopes"])
+	}
+}
+
+func TestValidateClaims(t *testing.T) {
+	tests := []struct {
+		name    string
+		claims  []apisv1alpha2.PermissionClaim
+		wantErr bool
+	}{
+		{
+			name: "core type with empty identity is OK",
+			claims: []apisv1alpha2.PermissionClaim{
+				{GroupResource: apisv1alpha2.GroupResource{Group: "", Resource: "configmaps"}, IdentityHash: ""},
+			},
+			wantErr: false,
+		},
+		{
+			name: "foreign type with resolved identity is OK",
+			claims: []apisv1alpha2.PermissionClaim{
+				{GroupResource: apisv1alpha2.GroupResource{Group: "access.opendefense.cloud", Resource: "scopes"}, IdentityHash: "abc123"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "foreign type with empty identity is rejected",
+			claims: []apisv1alpha2.PermissionClaim{
+				{GroupResource: apisv1alpha2.GroupResource{Group: "access.opendefense.cloud", Resource: "scopes"}, IdentityHash: ""},
+			},
+			wantErr: true,
+		},
+		{
+			name: "mixed: one unresolved foreign among valid is rejected",
+			claims: []apisv1alpha2.PermissionClaim{
+				{GroupResource: apisv1alpha2.GroupResource{Group: "", Resource: "configmaps"}, IdentityHash: ""},
+				{GroupResource: apisv1alpha2.GroupResource{Group: "access.opendefense.cloud", Resource: "scopes"}, IdentityHash: ""},
+			},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClaims(tc.claims)
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("validateClaims() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
 	}
 }

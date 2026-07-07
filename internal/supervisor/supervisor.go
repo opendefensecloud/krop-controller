@@ -20,7 +20,10 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"sync"
+
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // StartFunc launches a blocking instance-serving manager for one APIExport; it
@@ -62,9 +65,15 @@ func (s *Supervisor) Ensure(parent context.Context, exportName string) {
 		// re-Ensured. forget checks pointer identity, so it never removes a
 		// newer entry created by a stop/restart while this start was returning.
 		defer s.forget(exportName, e)
-		// start blocks until ctx is cancelled; ignore the returned error here
-		// (the caller observes liveness via Running / logs inside start).
-		_ = s.start(ctx, exportName)
+		// start blocks until ctx is cancelled. A clean shutdown returns nil (or the
+		// context's cancellation error); any OTHER terminal error means the per-export
+		// manager fell over — surface it at the supervisor boundary so a persistently
+		// failing manager is visible (forget still clears the entry so the next Ensure
+		// self-heals by restarting it).
+		if err := s.start(ctx, exportName); err != nil &&
+			!errors.Is(err, context.Canceled) && ctx.Err() == nil {
+			logf.Log.WithName("supervisor").Error(err, "instance-serving manager terminated with error", "export", exportName)
+		}
 	}()
 }
 

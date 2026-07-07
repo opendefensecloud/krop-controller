@@ -15,6 +15,7 @@
 package registrar
 
 import (
+	"fmt"
 	"sort"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
@@ -49,6 +50,24 @@ func DeriveClaims(foreign []schema.GroupResource, identity map[schema.GroupResou
 	}
 
 	return claims
+}
+
+// validateClaims rejects any foreign (non-core) permissionClaim whose identity
+// could not be resolved. A claim with Group != "" but IdentityHash == "" means the
+// owning APIExport isn't bound in the provider workspace, so the emitted claim
+// would not authorize and consumers would accept a silently-broken claim. Core
+// types (Group == "") legitimately carry an empty identityHash and are allowed.
+// Returns an error naming the first unresolved group/resource.
+func validateClaims(claims []apisv1alpha2.PermissionClaim) error {
+	for _, c := range claims {
+		if c.Group != "" && c.IdentityHash == "" {
+			return fmt.Errorf(
+				"permissionClaim for %s/%s has no identityHash: its owning APIExport is not bound in the provider workspace",
+				c.Group, c.Resource)
+		}
+	}
+
+	return nil
 }
 
 // ForeignConsumerGRs enumerates the GroupResources of consumer-target nodes that
