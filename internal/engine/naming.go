@@ -28,16 +28,21 @@ const maxNameLen = 253
 // provider-target child. Many consumers' provider children land in ONE provider
 // workspace (idea.md §9.1), so the name is qualified by the consumer's logical
 // cluster name and the instance name. Inputs are assumed already DNS-safe
-// (kcp cluster names, k8s-validated instance names, blueprint template names);
-// over-long results fall back to a truncated prefix + content hash.
+// (kcp cluster names, k8s-validated instance names, blueprint template names).
+//
+// The name is ALWAYS suffixed with a short content hash of the structured,
+// null-joined tuple so distinct (cluster, instance, name) tuples never collide —
+// even when the readable hyphen-joined prefix would. Instance names are DNS-1123
+// subdomains that may themselves contain hyphens, so the hyphen-joined prefix
+// alone is not injective (e.g. "a"+"b-c"+"d" vs "a-b"+"c"+"d" both read "a-b-c-d").
+// \x00 cannot appear in a DNS name, so the null-joined tuple is un-collidable.
 func ProviderChildName(clusterName, instanceName, originalName string) string {
+	sum := sha256.Sum256([]byte(clusterName + "\x00" + instanceName + "\x00" + originalName))
+	suffix := hex.EncodeToString(sum[:])[:12]
 	base := fmt.Sprintf("%s-%s-%s", clusterName, instanceName, originalName)
-	if len(base) <= maxNameLen {
-		return base
+	// leave room for "-" + suffix; truncate the readable prefix if needed.
+	if len(base)+1+len(suffix) > maxNameLen {
+		base = base[:maxNameLen-1-len(suffix)]
 	}
-	sum := sha256.Sum256([]byte(base))
-	suffix := hex.EncodeToString(sum[:])[:16]
-	// leave room for "-" + 16 hex chars
-	prefix := base[:maxNameLen-1-len(suffix)]
-	return prefix + "-" + suffix
+	return base + "-" + suffix
 }

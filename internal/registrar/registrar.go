@@ -24,8 +24,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
 	graph "github.com/kubernetes-sigs/kro/pkg/graph"
 
@@ -143,7 +145,22 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 		r.OnPublished(exportName, instanceGVK, g)
 	}
 
+	// Re-Get the published APIExport to observe status.identityHash, which kcp
+	// assigns asynchronously after the apply. It may still be empty on this pass
+	// (the object was just applied) — that's fine, the 5m resync re-reads it. This
+	// is best-effort: a failed re-Get must not fail the reconcile, since the resync
+	// retries. Whatever we read (including "") is written to blueprint status.
+	var identityHash string
+	published := &apisv1alpha2.APIExport{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Name: exportName}, published); err != nil {
+		logf.FromContext(ctx).V(1).Info("re-Get of published APIExport for identityHash failed; resync will retry",
+			"apiexport", exportName, "err", err.Error())
+	} else {
+		identityHash = published.Status.IdentityHash
+	}
+
 	bp.Status.ExportedAPI = exportName
+	bp.Status.IdentityHash = identityHash
 	bp.Status.ObservedSpecHash = specHash
 	meta.SetStatusCondition(&bp.Status.Conditions, metav1.Condition{
 		Type:    "Ready",
