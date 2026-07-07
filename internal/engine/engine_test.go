@@ -71,3 +71,23 @@ func TestReconcile_UnconfiguredTargetErrors(t *testing.T) {
 		t.Fatal("want error when the child's target has no configured applier")
 	}
 }
+
+func TestReconcile_ProjectsInstanceStatus(t *testing.T) {
+	inst := newInstance("eu")
+	rt := newRuntime(t, inst)
+	consumer := &fakeApplier{}
+
+	e := New()
+	if _, err := e.Reconcile(context.Background(), rt, map[Target]Applier{TargetConsumer: consumer}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// The blueprint maps status.configMapName = ${config.metadata.name}.
+	desiredInstance, err := ProjectStatus(rt)
+	if err != nil {
+		t.Fatalf("ProjectStatus: %v", err)
+	}
+	name, _, _ := unstructured.NestedString(desiredInstance.Object, "status", "configMapName")
+	if name != "eu-cluster-config" {
+		t.Fatalf("status.configMapName = %q, want eu-cluster-config", name)
+	}
+}
