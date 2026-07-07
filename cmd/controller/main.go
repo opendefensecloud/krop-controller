@@ -177,6 +177,11 @@ func run() error {
 	// APIExport main body, parameterized by export name and driven off the
 	// registry the Registrar populates on publish. It blocks until ctx (the
 	// Supervisor's per-export context) is cancelled.
+	//
+	// M4b limitation: a live blueprint SPEC CHANGE keeps serving the OLD graph
+	// until this manager is restarted — the registry Set + supervisor Ensure are
+	// both no-ops while the manager runs, so the reconciler holds its original
+	// graph. Multi-version / hot-swap serving is deferred (see M4b notes).
 	startFn := func(ctx context.Context, exportName string) error {
 		exportLog := entryLog.WithValues("apiExport", exportName)
 
@@ -282,6 +287,11 @@ func run() error {
 		OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph) {
 			registry.Set(exportName, servedBlueprint{graph: g, gvk: instanceGVK})
 			sup.Ensure(rootCtx, exportName)
+		},
+		OnDeleted: func(export string) {
+			if export != "" {
+				sup.Stop(export)
+			}
 		},
 	}
 

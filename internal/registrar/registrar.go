@@ -17,11 +17,13 @@ package registrar
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	krov1alpha1 "github.com/kubernetes-sigs/kro/api/v1alpha1"
@@ -30,6 +32,16 @@ import (
 	kropv1alpha1 "go.opendefense.cloud/krop-controller/api/v1alpha1"
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 )
+
+// blueprintFinalizer guards a blueprint so that its per-export instance-serving
+// manager is torn down before the object is removed from the API server.
+const blueprintFinalizer = "krop.opendefense.cloud/registrar"
+
+// resyncInterval periodically re-drives a successfully published blueprint so
+// Reconcile → OnPublished → Ensure re-triggers. Ensure is idempotent while a
+// manager runs and restarts one that crashed (supervisor.forget cleared it), so
+// the periodic requeue is the production self-heal re-trigger.
+const resyncInterval = 5 * time.Minute
 
 // Registrar reconciles blueprints into published APIExports and notifies the
 // supervisor to (re)start the instance-serving manager for the export.
@@ -45,6 +57,9 @@ type Registrar struct {
 	// OnPublished is called after a successful publish so the supervisor can ensure
 	// an instance manager is running for this blueprint's export. May be nil.
 	OnPublished func(exportName string, instanceGVK schema.GroupVersionKind, g *graph.Graph)
+	// OnDeleted is called during finalizer-based teardown of a deleted blueprint so
+	// the supervisor can stop the export's instance manager. May be nil.
+	OnDeleted func(exportName string)
 }
 
 // Reconcile publishes one blueprint: build (or reuse) its graph, mint the ARS,
@@ -53,7 +68,37 @@ type Registrar struct {
 func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	bp := &kropv1alpha1.ResourceGraphDefinition{}
 	if err := r.Client.Get(ctx, req.NamespacedName, bp); err != nil {
+		// NotFound means the blueprint is fully gone: the finalizer pass below
+		// already tore the manager down, so there is nothing left to do here.
 		return reconcile.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Deletion: the object still exists (with a DeletionTimestamp) while our
+	// finalizer is present. Tear the instance manager down, then release the
+	// finalizer so the API server can remove the object.
+	if !bp.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(bp, blueprintFinalizer) {
+			// Only the per-export manager is torn down here. Deleting the
+			// published APIExport / APIResourceSchema objects is deferred to the
+			// M5 garbage collector.
+			if r.OnDeleted != nil && bp.Status.ExportedAPI != "" {
+				r.OnDeleted(bp.Status.ExportedAPI)
+			}
+			controllerutil.RemoveFinalizer(bp, blueprintFinalizer)
+			if err := r.Client.Update(ctx, bp); err != nil {
+				return reconcile.Result{}, fmt.Errorf("removing blueprint finalizer: %w", err)
+			}
+		}
+		return reconcile.Result{}, nil
+	}
+
+	// Normal reconcile: ensure the teardown finalizer is present before we
+	// publish anything, so a delete that races an in-flight publish still runs
+	// the manager teardown.
+	if controllerutil.AddFinalizer(bp, blueprintFinalizer) {
+		if err := r.Client.Update(ctx, bp); err != nil {
+			return reconcile.Result{}, fmt.Errorf("adding blueprint finalizer: %w", err)
+		}
 	}
 
 	specHash := SpecHash(bp.Spec)
@@ -109,7 +154,13 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 	if err := r.Client.Status().Update(ctx, bp); err != nil {
 		return reconcile.Result{}, fmt.Errorf("updating blueprint status: %w", err)
 	}
-	return reconcile.Result{}, nil
+	// Periodically re-drive so Reconcile → OnPublished → Ensure re-triggers: the
+	// production self-heal path. Ensure is a no-op while the manager runs and
+	// restarts it if it crashed (supervisor.forget cleared the entry). SetStatusCondition
+	// and a no-diff Status().Update don't bump resourceVersion and the APIExport SSA
+	// is a server-side no-op for identical content, so the requeue is the only
+	// steady-state churn.
+	return reconcile.Result{RequeueAfter: resyncInterval}, nil
 }
 
 // fail records a Ready=False condition (best-effort) and returns the error so the
