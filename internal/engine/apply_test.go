@@ -92,3 +92,45 @@ func TestQualifyingApplier_RenamesBeforeDelegating(t *testing.T) {
 		t.Fatalf("caller's object was mutated: name=%q", obj.GetName())
 	}
 }
+
+func TestLabelingApplier_MergesLabels_NoMutateCaller(t *testing.T) {
+	inner := &fakeApplier{}
+	a := NewLabelingApplier(inner, map[string]string{"k": "v"})
+	obj := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]interface{}{"name": "x", "labels": map[string]interface{}{"keep": "me"}},
+	}}
+	if _, err := a.Apply(context.Background(), obj); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	got := inner.applied[0].GetLabels()
+	if got["k"] != "v" || got["keep"] != "me" {
+		t.Fatalf("labels not merged: %v", got)
+	}
+	if _, ok := obj.GetLabels()["k"]; ok {
+		t.Fatal("caller object mutated")
+	}
+}
+
+func TestOwnerRefApplier_StampsInstanceOwner(t *testing.T) {
+	inner := &fakeApplier{}
+	owner := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "krop.opendefense.cloud/v1alpha1", "kind": "KubernetesCluster",
+		"metadata": map[string]interface{}{"name": "demo", "uid": "uid-9"},
+	}}
+	a := NewOwnerRefApplier(inner, owner)
+	child := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]interface{}{"name": "x"},
+	}}
+	if _, err := a.Apply(context.Background(), child); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	refs := inner.applied[0].GetOwnerReferences()
+	if len(refs) != 1 || refs[0].UID != "uid-9" || refs[0].Kind != "KubernetesCluster" || refs[0].Name != "demo" {
+		t.Fatalf("owner ref wrong: %+v", refs)
+	}
+	if len(child.GetOwnerReferences()) != 0 {
+		t.Fatal("caller object mutated")
+	}
+}

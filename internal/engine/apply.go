@@ -18,6 +18,7 @@ package engine
 import (
 	"context"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -78,4 +79,58 @@ func (q *QualifyingApplier) Apply(ctx context.Context, obj *unstructured.Unstruc
 	renamed := obj.DeepCopy()
 	renamed.SetName(q.rename(obj.GetName()))
 	return q.inner.Apply(ctx, renamed)
+}
+
+// LabelingApplier stamps a fixed label set on each child before delegating, so
+// children can be enumerated + deleted by label on instance delete (idea.md §11).
+type LabelingApplier struct {
+	inner  Applier
+	labels map[string]string
+}
+
+// NewLabelingApplier returns a LabelingApplier over inner.
+func NewLabelingApplier(inner Applier, labels map[string]string) *LabelingApplier {
+	return &LabelingApplier{inner: inner, labels: labels}
+}
+
+// Apply merges the labels onto a copy of obj (preserving existing labels) and delegates.
+func (l *LabelingApplier) Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	out := obj.DeepCopy()
+	merged := out.GetLabels()
+	if merged == nil {
+		merged = map[string]string{}
+	}
+	for k, v := range l.labels {
+		merged[k] = v
+	}
+	out.SetLabels(merged)
+	return l.inner.Apply(ctx, out)
+}
+
+// OwnerRefApplier stamps an ownerReference to the instance on each child before
+// delegating. Used for consumer-target children (same workspace as the instance)
+// as a GC backstop: kcp's per-workspace collector reclaims them if the finalizer
+// path is ever bypassed (e.g. force-delete). Cross-workspace provider children
+// cannot use this (owner refs are workspace-local).
+type OwnerRefApplier struct {
+	inner Applier
+	owner *unstructured.Unstructured
+}
+
+// NewOwnerRefApplier returns an OwnerRefApplier owned by instance.
+func NewOwnerRefApplier(inner Applier, instance *unstructured.Unstructured) *OwnerRefApplier {
+	return &OwnerRefApplier{inner: inner, owner: instance}
+}
+
+// Apply sets the instance owner reference on a copy of obj and delegates.
+func (o *OwnerRefApplier) Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	out := obj.DeepCopy()
+	ref := metav1.OwnerReference{
+		APIVersion: o.owner.GetAPIVersion(),
+		Kind:       o.owner.GetKind(),
+		Name:       o.owner.GetName(),
+		UID:        o.owner.GetUID(),
+	}
+	out.SetOwnerReferences([]metav1.OwnerReference{ref})
+	return o.inner.Apply(ctx, out)
 }
