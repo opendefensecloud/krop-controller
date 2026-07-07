@@ -53,6 +53,18 @@ func sampleRGD() *krov1alpha1.ResourceGraphDefinition {
 			},
 			"data": map[string]interface{}{"region": "${schema.spec.region}"},
 		}, nil, nil),
+		generator.WithResource("providerRecord", map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "ConfigMap",
+			"metadata": map[string]interface{}{
+				"name":      "${schema.spec.region}-provider-record",
+				"namespace": "default",
+				"annotations": map[string]interface{}{
+					TargetAnnotation: string(TargetProvider),
+				},
+			},
+			"data": map[string]interface{}{"region": "${schema.spec.region}"},
+		}, nil, nil),
 	)
 	rgd.Spec.Schema.Group = "krop.opendefense.cloud"
 	return rgd
@@ -84,7 +96,7 @@ func setUnexportedField(obj interface{}, name string, val interface{}) {
 
 func TestBuildTestGraph_Builds(t *testing.T) {
 	g := buildTestGraph(t, sampleRGD())
-	if len(g.TopologicalOrder) != 1 || g.TopologicalOrder[0] != "config" {
-		t.Fatalf("topological order = %v, want [config]", g.TopologicalOrder)
+	if len(g.TopologicalOrder) != 2 {
+		t.Fatalf("topological order = %v, want 2 nodes", g.TopologicalOrder)
 	}
 }
