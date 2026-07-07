@@ -1,0 +1,10 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIBinding
+metadata:
+  name: kubernetesclusters
+spec:
+  reference:
+    export:
+      # ${PROVIDER_PATH} is substituted by the test with the provider workspace path.
+      path: ${PROVIDER_PATH}
+      name: kubernetesclusters.krop.opendefense.cloud

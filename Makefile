@@ -8,7 +8,11 @@ common.mk:
 APIGEN ?= $(LOCALGOBIN)/apigen
 
 KCP ?= $(LOCALBIN)/kcp
-KCP_VERSION ?= 0.32.3
+# Envtest kcp binary version. Pinned to what multicluster-provider v0.8.0's
+# envtest was built/tested against (its Makefile + access-operator both use
+# 0.30.0). This is the test-harness binary, distinct from the production kcp
+# version (idea.md spikes targeted v0.32.3).
+KCP_VERSION ?= 0.30.0
 
 IMG_REGISTRY ?= ghcr.io/opendefense
 IMG_TAG ?= latest
