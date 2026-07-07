@@ -47,9 +47,20 @@ func NewSSAApplier(c client.Client) *SSAApplier {
 }
 
 // Apply server-side-applies obj (force ownership) and returns it as read back.
+//
+// The write uses the non-deprecated Client.Apply (controller-runtime v0.24)
+// adapted for unstructured via client.ApplyConfigurationFromUnstructured, which
+// wraps an *unstructured.Unstructured as a runtime.ApplyConfiguration. desired is
+// built natively from blueprint templates (not converted from a typed API object),
+// so the wrapper's "explicit zero value" caveat does not apply.
+//
+// The separate Get read-back is LOAD-BEARING and MUST stay: cross-target CEL (M3)
+// applies a provider child (spec only) then observes its STATUS here to feed a
+// downstream consumer child's ${child.status.x}. The Apply result alone does not
+// reflect fields set on the status subresource by other controllers.
 func (a *SSAApplier) Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	desired := obj.DeepCopy()
-	if err := a.c.Patch(ctx, desired, client.Apply,
+	if err := a.c.Apply(ctx, client.ApplyConfigurationFromUnstructured(desired),
 		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		return nil, err
 	}
