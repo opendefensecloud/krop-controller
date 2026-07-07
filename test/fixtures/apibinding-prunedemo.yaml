@@ -1,0 +1,17 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIBinding
+metadata:
+  name: gatedclusters
+spec:
+  reference:
+    export:
+      # ${PROVIDER_PATH} is substituted by the test with the provider workspace path.
+      path: ${PROVIDER_PATH}
+      name: gatedclusters.krop.opendefense.cloud
+  permissionClaims:
+    - group: ""
+      resource: configmaps
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      selector:
+        matchAll: true
+      state: Accepted

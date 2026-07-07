@@ -1,0 +1,50 @@
+# test/fixtures/blueprint-prune-rgd.yaml
+# A blueprint with an includeWhen-GATED provider child, used by the prune e2e.
+#
+# baseConfig (consumer target) is ALWAYS present. agentRequest (provider target)
+# is included only while ${schema.spec.withAgent} is true. Flipping withAgent to
+# false drops agentRequest from the desired set, so a complete reconcile pass must
+# PRUNE the already-materialized provider child while baseConfig survives — proving
+# Reconciler.pruneChildren end-to-end, across both target workspaces.
+#
+# Neither child reads a cross-target status, so every pass is Complete (the prune
+# precondition) without waiting on an external fulfilment controller.
+apiVersion: krop.opendefense.cloud/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: gatedcluster
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: GatedCluster
+    group: krop.opendefense.cloud
+    spec:
+      region: string
+      withAgent: boolean
+    status:
+      configMapName: ${baseConfig.metadata.name}
+  resources:
+    - id: baseConfig
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${schema.spec.region}-base-config
+          namespace: default
+          annotations:
+            krop.opendefense.cloud/target: consumer
+        data:
+          region: ${schema.spec.region}
+    - id: agentRequest
+      includeWhen:
+        - ${schema.spec.withAgent}
+      template:
+        apiVersion: fulfil.krop.opendefense.cloud/v1alpha1
+        kind: AgentRequest
+        metadata:
+          name: ${schema.spec.region}-agent
+          namespace: default
+          annotations:
+            krop.opendefense.cloud/target: provider
+        spec:
+          region: ${schema.spec.region}
