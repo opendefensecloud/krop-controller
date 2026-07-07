@@ -43,6 +43,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -351,6 +352,33 @@ var _ = Describe("M4b full dynamic auto-publication", Ordered, func() {
 			tok, _, _ := unstructured.NestedString(got.Object, "status", "agentToken")
 			return tok == "tok-xyz789", "status.agentToken=" + tok
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "instance status.agentToken not mapped")
+
+		// --- M5: delete the instance and assert cross-workspace GC ---
+		Expect(cli.Cluster(consumerPath).Delete(ctx, instance)).To(Succeed())
+
+		// Provider-target AgentRequest is deleted from the provider workspace.
+		envtest.Eventually(GinkgoT(), func() (bool, string) {
+			ar := &unstructured.Unstructured{}
+			ar.SetGroupVersionKind(agentGVK)
+			err := cli.Cluster(providerPath).Get(ctx, agentKey, ar)
+			return apierrors.IsNotFound(err), "agentrequest still present"
+		}, wait.ForeverTestTimeout, 300*time.Millisecond, "provider AgentRequest not GC'd on instance delete")
+
+		// Consumer-target ConfigMap is deleted from the consumer workspace.
+		envtest.Eventually(GinkgoT(), func() (bool, string) {
+			cm := &unstructured.Unstructured{}
+			cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
+			err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm)
+			return apierrors.IsNotFound(err), "consumer ConfigMap still present"
+		}, wait.ForeverTestTimeout, 300*time.Millisecond, "consumer ConfigMap not GC'd on instance delete")
+
+		// The instance itself is gone (finalizer removed).
+		envtest.Eventually(GinkgoT(), func() (bool, string) {
+			got := &unstructured.Unstructured{}
+			got.SetGroupVersionKind(instance.GroupVersionKind())
+			err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "demo"}, got)
+			return apierrors.IsNotFound(err), "instance still present (finalizer not removed)"
+		}, wait.ForeverTestTimeout, 300*time.Millisecond, "instance not GC'd after finalizer removal")
 	})
 })
 
