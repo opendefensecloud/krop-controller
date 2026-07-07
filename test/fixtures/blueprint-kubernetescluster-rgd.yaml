@@ -7,7 +7,6 @@ apiVersion: krop.opendefense.cloud/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
   name: kubernetescluster
-  namespace: default
 spec:
   schema:
     apiVersion: v1alpha1

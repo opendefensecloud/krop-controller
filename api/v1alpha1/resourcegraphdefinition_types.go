@@ -44,7 +44,7 @@ type BlueprintStatus struct {
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=rgd
+// +kubebuilder:resource:scope=Cluster,shortName=rgd
 type ResourceGraphDefinition struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
