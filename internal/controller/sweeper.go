@@ -70,6 +70,11 @@ type Sweeper struct {
 	// ProviderClient reads liveness records and deletes provider children in the
 	// provider workspace.
 	ProviderClient client.Client
+	// HostClient reclaims orphaned host-target children in the physical host
+	// cluster (by the same instance-uid label). It is nil when the host target is
+	// disabled, in which case the host sweep is skipped. The liveness record itself
+	// always lives in the provider workspace and is deleted via ProviderClient.
+	HostClient client.Client
 	// RecordNamespace holds the liveness records. Defaults to "default".
 	RecordNamespace string
 	// StaleAfter is the age past which a record's instance is deemed orphaned. It
@@ -195,16 +200,38 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	return nil
 }
 
-// sweepChildren deletes every provider child of the orphaned instance: for each
-// GVK recorded in the liveness record's data, list children by the instance-uid
-// label and delete them (ignoring not-found).
+// sweepChildren deletes every child of the orphaned instance across both planes:
+// the provider children recorded under providerChildGVKs (via ProviderClient) and,
+// when a host client is configured, the host children recorded under hostChildGVKs
+// (via HostClient). The liveness record itself stays in the provider workspace and
+// is deleted by the caller after both planes are swept.
 func (s *Sweeper) sweepChildren(ctx context.Context, rec *unstructured.Unstructured, instanceUID string) error {
-	l := log.FromContext(ctx).WithName("orphan-sweeper")
 	if instanceUID == "" {
 		return fmt.Errorf("liveness record %s missing %s label", rec.GetName(), kropengine.LabelInstanceUID)
 	}
 
-	gvkRaw, _, _ := unstructured.NestedString(rec.Object, "data", "providerChildGVKs")
+	providerRaw, _, _ := unstructured.NestedString(rec.Object, "data", "providerChildGVKs")
+	if err := s.sweepChildrenVia(ctx, s.ProviderClient, providerRaw, instanceUID); err != nil {
+		return err
+	}
+
+	// Host children live in a separate cluster; sweep them only when a host client
+	// is configured (nil ⇒ host target disabled, nothing to reclaim there).
+	if s.HostClient != nil {
+		hostRaw, _, _ := unstructured.NestedString(rec.Object, "data", "hostChildGVKs")
+		if err := s.sweepChildrenVia(ctx, s.HostClient, hostRaw, instanceUID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// sweepChildrenVia deletes the orphaned instance's children through one client:
+// for each GVK token in gvkRaw, list children by the instance-uid label and delete
+// them (ignoring not-found). Unparseable tokens are logged and skipped.
+func (s *Sweeper) sweepChildrenVia(ctx context.Context, cl client.Client, gvkRaw, instanceUID string) error {
+	l := log.FromContext(ctx).WithName("orphan-sweeper")
 	sel := client.MatchingLabels{kropengine.LabelInstanceUID: instanceUID}
 	for token := range strings.SplitSeq(gvkRaw, ",") {
 		token = strings.TrimSpace(token)
@@ -213,21 +240,21 @@ func (s *Sweeper) sweepChildren(ctx context.Context, rec *unstructured.Unstructu
 		}
 		gvk, err := parseGVKToken(token)
 		if err != nil {
-			l.Info("skipping unparseable child GVK", "record", rec.GetName(), "token", token)
+			l.Info("skipping unparseable child GVK", "token", token)
 			continue
 		}
 
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(schema.GroupVersionKind{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind + "List"})
-		if err := s.ProviderClient.List(ctx, list, sel); err != nil {
+		if err := cl.List(ctx, list, sel); err != nil {
 			return fmt.Errorf("listing %s children: %w", gvk.Kind, err)
 		}
 		for j := range list.Items {
 			child := &list.Items[j]
-			if err := s.ProviderClient.Delete(ctx, child); client.IgnoreNotFound(err) != nil {
+			if err := cl.Delete(ctx, child); client.IgnoreNotFound(err) != nil {
 				return fmt.Errorf("deleting %s %s: %w", gvk.Kind, child.GetName(), err)
 			}
-			l.Info("swept orphaned provider child", "gvk", token, "name", child.GetName())
+			l.Info("swept orphaned child", "gvk", token, "name", child.GetName())
 		}
 	}
 

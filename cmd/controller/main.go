@@ -458,6 +458,7 @@ func run() error {
 	// reconciling against the liveness records the instance reconciler refreshes.
 	if err := mgr.Add(&kropctrl.Sweeper{
 		ProviderClient: providerClient,
+		HostClient:     hostClient,
 		StaleAfter:     orphanStaleAfter,
 		SweepInterval:  orphanSweepInterval,
 	}); err != nil {

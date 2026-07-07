@@ -419,7 +419,11 @@ func (r *Reconciler) writeLivenessRecord(ctx context.Context, clusterName, insta
 	}
 	data := map[string]string{
 		"lastReconciled":    time.Now().UTC().Format(time.RFC3339),
-		"providerChildGVKs": r.providerChildGVKString(),
+		"providerChildGVKs": r.childGVKString(kropengine.TargetProvider),
+		// Host children live in a separate cluster; record their GVKs so the
+		// sweeper can reclaim them via the host client. Empty ("") when the host
+		// target is disabled/unused — harmless (no tokens to sweep).
+		"hostChildGVKs": r.childGVKString(kropengine.TargetHost),
 	}
 
 	key := client.ObjectKey{Namespace: r.recordNamespace(), Name: kropengine.LivenessRecordName(clusterName, instanceUID)}
@@ -470,12 +474,13 @@ func (r *Reconciler) deleteLivenessRecord(ctx context.Context, clusterName, inst
 	return nil
 }
 
-// providerChildGVKString serializes the provider-target child GVKs as a
-// comma-joined list of "group/version/Kind" tokens, so the sweeper knows what to
-// delete for an orphaned instance without re-deriving the graph. The core group
-// serializes with an empty first segment (e.g. "/v1/ConfigMap").
-func (r *Reconciler) providerChildGVKString() string {
-	gvks := r.childGVKs(kropengine.TargetProvider)
+// childGVKString serializes a target's child GVKs as a comma-joined list of
+// "group/version/Kind" tokens, so the sweeper knows what to delete for an
+// orphaned instance without re-deriving the graph. The core group serializes
+// with an empty first segment (e.g. "/v1/ConfigMap"). A target with no children
+// (e.g. host when disabled) yields "".
+func (r *Reconciler) childGVKString(target kropengine.Target) string {
+	gvks := r.childGVKs(target)
 	tokens := make([]string, 0, len(gvks))
 	for _, gvk := range gvks {
 		tokens = append(tokens, gvk.Group+"/"+gvk.Version+"/"+gvk.Kind)

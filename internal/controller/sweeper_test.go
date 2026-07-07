@@ -62,6 +62,32 @@ func mkAgentRequest(name, uid string) *unstructured.Unstructured {
 	return u
 }
 
+const hostDeploymentGVKToken = "apps/v1/Deployment"
+
+var hostDeploymentGVK = schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
+
+// mkRecordWithHost builds a liveness record recording both a provider-target
+// AgentRequest and a host-target Deployment.
+func mkRecordWithHost(name, uid, lastReconciled string) *unstructured.Unstructured {
+	u := mkRecord(name, uid, lastReconciled)
+	data, _, _ := unstructured.NestedStringMap(u.Object, "data")
+	data["hostChildGVKs"] = hostDeploymentGVKToken
+	_ = unstructured.SetNestedStringMap(u.Object, data, "data")
+
+	return u
+}
+
+// mkHostDeployment builds a labeled host-target child (a Deployment).
+func mkHostDeployment(name, uid string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(hostDeploymentGVK)
+	u.SetNamespace("default")
+	u.SetName(name)
+	u.SetLabels(map[string]string{kropengine.LabelInstanceUID: uid})
+
+	return u
+}
+
 // exists reports whether the named object of the given GVK is present.
 func exists(t *testing.T, cl client.Client, gvk schema.GroupVersionKind, name string) bool {
 	t.Helper()
@@ -111,6 +137,79 @@ func TestSweeper_DeletesOrphanedChildrenAndRecord(t *testing.T) {
 	}
 	if !exists(t, cl, agentRequestGVK, "child-2") {
 		t.Error("fresh child was wrongly deleted")
+	}
+}
+
+// TestSweeper_SweepsHostChildren asserts a stale record carrying hostChildGVKs
+// has its host children reclaimed through the fake HostClient, while its provider
+// children are still swept via ProviderClient.
+func TestSweeper_SweepsHostChildren(t *testing.T) {
+	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+
+	staleRec := mkRecordWithHost("krop-live-stale", "uid-1",
+		now.Add(-10*time.Minute).Format(time.RFC3339))
+	staleProviderChild := mkAgentRequest("child-1", "uid-1")
+	staleHostChild := mkHostDeployment("host-child-1", "uid-1")
+
+	providerCl := fake.NewClientBuilder().
+		WithObjects(staleRec, staleProviderChild).
+		Build()
+	hostCl := fake.NewClientBuilder().
+		WithObjects(staleHostChild).
+		Build()
+
+	s := &Sweeper{
+		ProviderClient: providerCl,
+		HostClient:     hostCl,
+		StaleAfter:     5 * time.Minute,
+		Clock:          func() time.Time { return now },
+		startedAt:      now.Add(-1 * time.Hour),
+	}
+	if err := s.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+
+	if exists(t, providerCl, configMapGVK, "krop-live-stale") {
+		t.Error("stale liveness record was not deleted")
+	}
+	if exists(t, providerCl, agentRequestGVK, "child-1") {
+		t.Error("stale provider child was not deleted")
+	}
+	if exists(t, hostCl, hostDeploymentGVK, "host-child-1") {
+		t.Error("stale host child was not swept through the host client")
+	}
+}
+
+// TestSweeper_NilHostClientSkipsHostSweep asserts a nil HostClient leaves the host
+// sweep unattempted (no error, no panic) while provider children are still swept,
+// even when the record carries hostChildGVKs.
+func TestSweeper_NilHostClientSkipsHostSweep(t *testing.T) {
+	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+
+	staleRec := mkRecordWithHost("krop-live-stale", "uid-1",
+		now.Add(-10*time.Minute).Format(time.RFC3339))
+	staleProviderChild := mkAgentRequest("child-1", "uid-1")
+
+	providerCl := fake.NewClientBuilder().
+		WithObjects(staleRec, staleProviderChild).
+		Build()
+
+	s := &Sweeper{
+		ProviderClient: providerCl,
+		HostClient:     nil, // host target disabled: host sweep must be skipped.
+		StaleAfter:     5 * time.Minute,
+		Clock:          func() time.Time { return now },
+		startedAt:      now.Add(-1 * time.Hour),
+	}
+	if err := s.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+
+	if exists(t, providerCl, configMapGVK, "krop-live-stale") {
+		t.Error("stale liveness record was not deleted")
+	}
+	if exists(t, providerCl, agentRequestGVK, "child-1") {
+		t.Error("stale provider child was not deleted")
 	}
 }
 
