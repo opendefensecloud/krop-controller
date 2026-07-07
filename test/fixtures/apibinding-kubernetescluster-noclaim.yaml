@@ -1,0 +1,22 @@
+# Negative-path APIBinding: binds the auto-published KubernetesCluster export but
+# explicitly REJECTS the configmaps permissionClaim. The binding still reaches
+# Bound (the claim is acknowledged, just not granted), but the provider's
+# virtual-workspace identity is NOT authorized to write ConfigMaps into this
+# consumer workspace — proving cross-workspace writes require the ACCEPTED claim.
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIBinding
+metadata:
+  name: kubernetesclusters
+spec:
+  reference:
+    export:
+      # ${PROVIDER_PATH} is substituted by the test with the provider workspace path.
+      path: ${PROVIDER_PATH}
+      name: kubernetesclusters.krop.opendefense.cloud
+  permissionClaims:
+    - group: ""
+      resource: configmaps
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      selector:
+        matchAll: true
+      state: Rejected
