@@ -123,6 +123,9 @@ func TestReconcile_CrossTargetPendsUntilProviderReady(t *testing.T) {
 	if res.Ready || !res.Requeue {
 		t.Fatalf("want Ready=false Requeue=true, got %+v", res)
 	}
+	if res.Complete {
+		t.Fatalf("want Complete=false on a pending pass (prune must not run), got %+v", res)
+	}
 	// The provider child WAS applied (it has no cross-target dep of its own).
 	if len(provider.applied) != 1 {
 		t.Fatalf("provider applied %d, want 1", len(provider.applied))

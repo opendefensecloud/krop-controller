@@ -74,6 +74,9 @@ func TestReconcile_AppliesConsumerChild_StripsRouting(t *testing.T) {
 	if res.Ready != true {
 		t.Fatalf("want Ready=true (ConfigMap has no readyWhen), got %+v", res)
 	}
+	if !res.Complete {
+		t.Fatalf("want Complete=true after a full pass, got %+v", res)
+	}
 }
 
 func TestReconcile_UnconfiguredTargetErrors(t *testing.T) {
@@ -127,5 +130,8 @@ func TestReconcile_RoutesToBothTargets(t *testing.T) {
 	}
 	if !res.Ready {
 		t.Fatalf("want Ready, got %+v", res)
+	}
+	if !res.Complete {
+		t.Fatalf("want Complete=true after a full pass over both targets, got %+v", res)
 	}
 }

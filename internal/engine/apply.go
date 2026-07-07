@@ -21,6 +21,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -33,6 +34,41 @@ const FieldManager = "krop-controller"
 // client-agnostic and unit-testable.
 type Applier interface {
 	Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+}
+
+// ChildID identifies an applied child for prune bookkeeping: the final GVK,
+// namespace and name of an object after all decorators (rename + labels) ran.
+type ChildID struct {
+	GVK             schema.GroupVersionKind
+	Namespace, Name string
+}
+
+// RecordingApplier wraps an inner Applier and records the identity of each object
+// it applies into a caller-owned sink, so the reconciler can compute the just-
+// applied set for prune. It must sit as the INNERMOST decorator (wrapping SSA) so
+// the object it sees already carries its final, renamed name and merged labels.
+type RecordingApplier struct {
+	inner   Applier
+	applied *[]ChildID
+}
+
+// NewRecordingApplier returns a RecordingApplier that appends each applied
+// object's ChildID to sink before delegating to inner.
+func NewRecordingApplier(inner Applier, sink *[]ChildID) *RecordingApplier {
+	return &RecordingApplier{inner: inner, applied: sink}
+}
+
+// Apply records obj's final identity, then delegates to inner and returns its
+// result. The name is already final at this point (QualifyingApplier renames
+// before delegating to its inner), so recording before delegating is correct.
+func (r *RecordingApplier) Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	*r.applied = append(*r.applied, ChildID{
+		GVK:       obj.GroupVersionKind(),
+		Namespace: obj.GetNamespace(),
+		Name:      obj.GetName(),
+	})
+
+	return r.inner.Apply(ctx, obj)
 }
 
 // SSAApplier applies objects into one workspace via server-side apply using a
