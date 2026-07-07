@@ -81,7 +81,7 @@ func applyFixtureFromFile(ctx context.Context, cli clusterclient.ClusterClient, 
 	Expect(cli.Cluster(wsPath).Create(ctx, u)).To(Succeed())
 }
 
-var _ = Describe("M2 dual-target reconcile", Ordered, func() {
+var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 	var (
 		ctx          = context.Background()
 		cli          clusterclient.ClusterClient
@@ -142,6 +142,26 @@ var _ = Describe("M2 dual-target reconcile", Ordered, func() {
 			return true, ""
 		}, wait.ForeverTestTimeout, 200*time.Millisecond, "KubernetesCluster type not served in consumer workspace")
 
+		// Install the status-bearing AgentRequest CRD in the provider workspace
+		// BEFORE building the graph: kro type-checks ${agentRequest.status.token}
+		// against the CRD's OpenAPI schema at graph-build time, so it must exist.
+		applyFixtureFromFile(ctx, cli, providerPath, "../../test/fixtures/crd-agentrequests.fulfil.krop.opendefense.cloud.yaml", nil)
+		envtest.Eventually(GinkgoT(), func() (bool, string) {
+			crd := &unstructured.Unstructured{}
+			crd.SetGroupVersionKind(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"})
+			if err := cli.Cluster(providerPath).Get(ctx, client.ObjectKey{Name: "agentrequests.fulfil.krop.opendefense.cloud"}, crd); err != nil {
+				return false, err.Error()
+			}
+			conds, _, _ := unstructured.NestedSlice(crd.Object, "status", "conditions")
+			for _, c := range conds {
+				cm, _ := c.(map[string]interface{})
+				if cm["type"] == "Established" && cm["status"] == "True" {
+					return true, ""
+				}
+			}
+			return false, "AgentRequest CRD not Established"
+		}, wait.ForeverTestTimeout, 200*time.Millisecond, "AgentRequest CRD not established")
+
 		// Build the compiled graph against the provider workspace's live discovery.
 		providerConfig := rest.CopyConfig(kcpConfig)
 		providerConfig.Host += providerPath.RequestPath()
@@ -173,8 +193,14 @@ var _ = Describe("M2 dual-target reconcile", Ordered, func() {
 				if err != nil {
 					return ctrl.Result{}, err
 				}
-				_, err = reconciler.Reconcile(ctx, cl.GetClient(), string(req.ClusterName), req.NamespacedName)
-				return ctrl.Result{}, err
+				res, err := reconciler.Reconcile(ctx, cl.GetClient(), string(req.ClusterName), req.NamespacedName)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				if res.Requeue {
+					return ctrl.Result{RequeueAfter: time.Second}, nil
+				}
+				return ctrl.Result{}, nil
 			}),
 		)).To(Succeed())
 
@@ -192,50 +218,59 @@ var _ = Describe("M2 dual-target reconcile", Ordered, func() {
 		}
 	})
 
-	It("materializes a consumer child (through the vw) AND a collision-named provider child", func() {
+	It("pends the consumer child until the provider AgentRequest status is set, then propagates it", func() {
 		instance := &unstructured.Unstructured{Object: map[string]interface{}{
-			"apiVersion": "krop.opendefense.cloud/v1alpha1",
-			"kind":       "KubernetesCluster",
-			"metadata":   map[string]interface{}{"name": "demo", "namespace": "default"},
-			"spec":       map[string]interface{}{"region": "eu"},
+			"apiVersion": "krop.opendefense.cloud/v1alpha1", "kind": "KubernetesCluster",
+			"metadata": map[string]interface{}{"name": "demo", "namespace": "default"},
+			"spec":     map[string]interface{}{"region": "eu"},
 		}}
 		Expect(cli.Cluster(consumerPath).Create(ctx, instance)).To(Succeed())
 
-		// Consumer-target ConfigMap in the consumer workspace (claim-authorized write via vw).
+		// The provider-target AgentRequest is created in the provider ws (collision-named).
+		agentName := kropengine.ProviderChildName(consumerWS.Spec.Cluster, "demo", "eu-agent")
+		agentKey := client.ObjectKey{Namespace: "default", Name: agentName}
+		envtest.Eventually(GinkgoT(), func() (bool, string) {
+			ar := &unstructured.Unstructured{}
+			ar.SetGroupVersionKind(schema.GroupVersionKind{Group: "fulfil.krop.opendefense.cloud", Version: "v1alpha1", Kind: "AgentRequest"})
+			err := cli.Cluster(providerPath).Get(ctx, agentKey, ar)
+			return err == nil, "agentrequest not created"
+		}, wait.ForeverTestTimeout, 200*time.Millisecond, "provider AgentRequest not created")
+
+		// The consumer ConfigMap must NOT exist yet — it pends on the absent status.token.
+		Consistently(func() bool {
+			cm := &unstructured.Unstructured{}
+			cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
+			err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm)
+			return err != nil // still not found
+		}, 2*time.Second, 200*time.Millisecond).Should(BeTrue(), "consumer child must pend until provider status is set")
+
+		// Simulate the downstream fulfilment controller: patch the AgentRequest status.
+		ar := &unstructured.Unstructured{}
+		ar.SetGroupVersionKind(schema.GroupVersionKind{Group: "fulfil.krop.opendefense.cloud", Version: "v1alpha1", Kind: "AgentRequest"})
+		Expect(cli.Cluster(providerPath).Get(ctx, agentKey, ar)).To(Succeed())
+		Expect(unstructured.SetNestedField(ar.Object, "tok-xyz789", "status", "token")).To(Succeed())
+		Expect(cli.Cluster(providerPath).Status().Update(ctx, ar)).To(Succeed())
+
+		// Now (on a requeue reconcile) the consumer ConfigMap appears with the propagated token.
 		envtest.Eventually(GinkgoT(), func() (bool, string) {
 			cm := &unstructured.Unstructured{}
 			cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
 			if err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm); err != nil {
 				return false, err.Error()
 			}
-			region, _, _ := unstructured.NestedString(cm.Object, "data", "region")
-			return region == "eu", "consumer cm data.region=" + region
-		}, wait.ForeverTestTimeout, 200*time.Millisecond, "consumer-target ConfigMap not materialized")
+			tok, _, _ := unstructured.NestedString(cm.Object, "data", "token")
+			return tok == "tok-xyz789", "consumer cm data.token=" + tok
+		}, wait.ForeverTestTimeout, 200*time.Millisecond, "cross-target token did not propagate to the consumer child")
 
-		// Provider-target ConfigMap in the provider workspace, collision-free name.
-		// consumerWS.Spec.Cluster is the consumer's logical-cluster name — exactly
-		// what mc-runtime yields as req.ClusterName inside the reconciler, so the
-		// expected provider-child name matches what the reconciler computed.
-		wantProvider := kropengine.ProviderChildName(consumerWS.Spec.Cluster, "demo", "eu-provider-record")
-		envtest.Eventually(GinkgoT(), func() (bool, string) {
-			cm := &unstructured.Unstructured{}
-			cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
-			if err := cli.Cluster(providerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: wantProvider}, cm); err != nil {
-				return false, err.Error()
-			}
-			region, _, _ := unstructured.NestedString(cm.Object, "data", "region")
-			return region == "eu", "provider cm data.region=" + region
-		}, wait.ForeverTestTimeout, 200*time.Millisecond, "provider-target ConfigMap not materialized as "+wantProvider)
-
-		// Instance status projected.
+		// Instance status maps agentToken from the provider child status.
 		envtest.Eventually(GinkgoT(), func() (bool, string) {
 			got := &unstructured.Unstructured{}
 			got.SetGroupVersionKind(instance.GroupVersionKind())
 			if err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Namespace: "default", Name: "demo"}, got); err != nil {
 				return false, err.Error()
 			}
-			name, _, _ := unstructured.NestedString(got.Object, "status", "configMapName")
-			return name == "eu-cluster-config", "status.configMapName=" + name
-		}, wait.ForeverTestTimeout, 200*time.Millisecond, "instance status not projected")
+			tok, _, _ := unstructured.NestedString(got.Object, "status", "agentToken")
+			return tok == "tok-xyz789", "status.agentToken=" + tok
+		}, wait.ForeverTestTimeout, 200*time.Millisecond, "instance status.agentToken not mapped")
 	})
 })
