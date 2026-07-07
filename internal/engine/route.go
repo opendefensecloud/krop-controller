@@ -19,8 +19,6 @@ package engine
 
 import (
 	"fmt"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // Target is a per-resource destination for an applied child object.
@@ -33,10 +31,6 @@ const (
 	TargetProvider Target = "provider"
 	// TargetHost routes a child into the host (physical) cluster.
 	TargetHost Target = "host"
-
-	// TargetAnnotation carries the routing decision on a resource template.
-	// It is read off the desired object and StripRouting'd before apply.
-	TargetAnnotation = "krop.opendefense.cloud/target"
 )
 
 // allTargets is the set of valid routing targets (also enforced by the CRD enum).
@@ -63,38 +57,4 @@ func TargetForNode(id string, routing map[string]Target) Target {
 	}
 
 	return TargetConsumer
-}
-
-// TargetOf returns the routing target of a desired object, defaulting to
-// consumer when the annotation is absent. Unknown values are an error.
-func TargetOf(o *unstructured.Unstructured) (Target, error) {
-	v, ok := o.GetAnnotations()[TargetAnnotation]
-	if !ok || v == "" {
-		return TargetConsumer, nil
-	}
-	switch Target(v) {
-	case TargetConsumer:
-		return TargetConsumer, nil
-	case TargetProvider:
-		return TargetProvider, nil
-	default:
-		return "", fmt.Errorf("invalid %s=%q (want %q or %q)",
-			TargetAnnotation, v, TargetConsumer, TargetProvider)
-	}
-}
-
-// StripRouting removes the routing annotation before apply so it never leaks
-// onto the materialized object. If it was the only annotation, the whole
-// annotations map is removed to avoid an empty map in server-side apply.
-func StripRouting(o *unstructured.Unstructured) {
-	annos := o.GetAnnotations()
-	if _, ok := annos[TargetAnnotation]; !ok {
-		return
-	}
-	delete(annos, TargetAnnotation)
-	if len(annos) == 0 {
-		unstructured.RemoveNestedField(o.Object, "metadata", "annotations")
-		return
-	}
-	o.SetAnnotations(annos)
 }

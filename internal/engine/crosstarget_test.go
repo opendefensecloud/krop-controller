@@ -38,16 +38,14 @@ func crossTargetRGD() *krov1alpha1.ResourceGraphDefinition {
 		generator.WithResource("vpc", map[string]any{
 			"apiVersion": "ec2.services.k8s.aws/v1alpha1", "kind": "VPC",
 			"metadata": map[string]any{
-				"name":        "${schema.spec.region}-vpc",
-				"annotations": map[string]any{TargetAnnotation: string(TargetProvider)},
+				"name": "${schema.spec.region}-vpc",
 			},
 			"spec": map[string]any{"cidrBlocks": []any{"10.0.0.0/16"}},
 		}, []string{"${vpc.status.vpcID != ''}"}, nil),
 		generator.WithResource("subnet", map[string]any{
 			"apiVersion": "ec2.services.k8s.aws/v1alpha1", "kind": "Subnet",
 			"metadata": map[string]any{
-				"name":        "${schema.spec.region}-subnet",
-				"annotations": map[string]any{TargetAnnotation: string(TargetConsumer)},
+				"name": "${schema.spec.region}-subnet",
 			},
 			"spec": map[string]any{"vpcID": "${vpc.status.vpcID}", "cidrBlock": "10.0.1.0/24"},
 		}, nil, nil),
@@ -55,6 +53,11 @@ func crossTargetRGD() *krov1alpha1.ResourceGraphDefinition {
 	rgd.Spec.Schema.Group = "krop.opendefense.cloud"
 
 	return rgd
+}
+
+// crossTargetRouting routes the cross-target RGD: vpc → provider, subnet → consumer.
+func crossTargetRouting() map[string]Target {
+	return map[string]Target{"vpc": TargetProvider, "subnet": TargetConsumer}
 }
 
 func crossTargetRuntime(t *testing.T) *runtime.Runtime {
@@ -83,7 +86,7 @@ func TestReconcile_CrossTargetCEL_ResolvesFromProviderStatus(t *testing.T) {
 
 	res, err := New().Reconcile(context.Background(), rt, map[Target]Applier{
 		TargetConsumer: consumer, TargetProvider: provider,
-	})
+	}, nil, crossTargetRouting())
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -113,7 +116,7 @@ func TestReconcile_CrossTargetPendsUntilProviderReady(t *testing.T) {
 
 	res, err := New().Reconcile(context.Background(), rt, map[Target]Applier{
 		TargetConsumer: consumer, TargetProvider: provider,
-	})
+	}, nil, crossTargetRouting())
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}

@@ -25,17 +25,17 @@ spec:
       configMapName: ${baseConfig.metadata.name}
   resources:
     - id: baseConfig
+      target: consumer
       template:
         apiVersion: v1
         kind: ConfigMap
         metadata:
           name: ${schema.spec.region}-base-config
           namespace: default
-          annotations:
-            krop.opendefense.cloud/target: consumer
         data:
           region: ${schema.spec.region}
     - id: agentRequest
+      target: provider
       includeWhen:
         - ${schema.spec.withAgent}
       template:
@@ -44,7 +44,5 @@ spec:
         metadata:
           name: ${schema.spec.region}-agent
           namespace: default
-          annotations:
-            krop.opendefense.cloud/target: provider
         spec:
           region: ${schema.spec.region}

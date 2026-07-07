@@ -29,9 +29,11 @@ import (
 	restmapper "k8s.io/client-go/restmapper"
 )
 
-// sampleRGD is the M1 blueprint: schema{region}, one consumer-target child that
-// is a core ConfigMap carrying the region. ConfigMap is in the kro fake
-// resolver's core scheme, so the graph builds with no cluster.
+// sampleRGD is the M1 blueprint: schema{region} with a consumer-target ConfigMap
+// carrying the region and a provider-target ConfigMap "record". Routing is now
+// carried by the build-time routing map (see sampleRouting), not the templates.
+// ConfigMap is in the kro fake resolver's core scheme, so the graph builds with no
+// cluster.
 func sampleRGD() *krov1alpha1.ResourceGraphDefinition {
 	rgd := generator.NewResourceGraphDefinition(
 		"kubernetescluster",
@@ -46,9 +48,6 @@ func sampleRGD() *krov1alpha1.ResourceGraphDefinition {
 			"metadata": map[string]any{
 				"name":      "${schema.spec.region}-cluster-config",
 				"namespace": "default",
-				"annotations": map[string]any{
-					TargetAnnotation: string(TargetConsumer),
-				},
 			},
 			"data": map[string]any{"region": "${schema.spec.region}"},
 		}, nil, nil),
@@ -58,9 +57,6 @@ func sampleRGD() *krov1alpha1.ResourceGraphDefinition {
 			"metadata": map[string]any{
 				"name":      "${schema.spec.region}-provider-record",
 				"namespace": "default",
-				"annotations": map[string]any{
-					TargetAnnotation: string(TargetProvider),
-				},
 			},
 			"data": map[string]any{"region": "${schema.spec.region}"},
 		}, nil, nil),
@@ -68,6 +64,12 @@ func sampleRGD() *krov1alpha1.ResourceGraphDefinition {
 	rgd.Spec.Schema.Group = "krop.opendefense.cloud"
 
 	return rgd
+}
+
+// sampleRouting is the routing map for sampleRGD: config → consumer (the default),
+// providerRecord → provider. Keyed by resource id, exactly as the engine resolves.
+func sampleRouting() map[string]Target {
+	return map[string]Target{"config": TargetConsumer, "providerRecord": TargetProvider}
 }
 
 // buildTestGraph builds a *graph.Graph with NO cluster by injecting kro's fake

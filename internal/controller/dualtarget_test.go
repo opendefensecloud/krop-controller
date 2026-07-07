@@ -180,7 +180,11 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		instGVK := schema.GroupVersionKind{Group: "krop.opendefense.cloud", Version: "v1alpha1", Kind: "KubernetesCluster"}
-		reconciler := &kropctrl.Reconciler{Graph: compiled, ProviderClient: providerClient, InstanceGVK: instGVK, BlueprintName: m2ExportName}
+		// LoadExampleBlueprint parses the embedded blueprint as a kro-native RGD,
+		// which drops our per-resource target field, so supply the routing map that
+		// the Registrar would derive from the wrapper spec's ToKro.
+		routing := map[string]kropengine.Target{"agentRequest": kropengine.TargetProvider, "config": kropengine.TargetConsumer}
+		reconciler := &kropctrl.Reconciler{Graph: compiled, ProviderClient: providerClient, InstanceGVK: instGVK, BlueprintName: m2ExportName, Routing: routing}
 
 		// In-process manager against the APIExport virtual workspace.
 		p, err := apiexport.New(providerConfig, m2ExportName, apiexport.Options{Scheme: scheme.Scheme})

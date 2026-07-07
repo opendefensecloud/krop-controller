@@ -72,14 +72,17 @@ func validateClaims(claims []apisv1alpha2.PermissionClaim) error {
 
 // ForeignConsumerGRs enumerates the GroupResources of consumer-target nodes that
 // are NOT the instance's own type (those need permissionClaims to be written into
-// the consumer workspace through the vw). Reads the routing target off each node's
-// template exactly as the engine does.
-func ForeignConsumerGRs(g *graph.Graph, instanceGR schema.GroupResource) []schema.GroupResource {
+// the consumer workspace through the vw). Resolves each node's routing target from
+// the build-time routing map exactly as the engine does. External-ref nodes are
+// skipped for now — their read-only verb split lands in a later task.
+func ForeignConsumerGRs(g *graph.Graph, instanceGR schema.GroupResource, routing map[string]kropengine.Target) []schema.GroupResource {
 	seen := map[schema.GroupResource]bool{}
 	var out []schema.GroupResource
 	for _, node := range g.Nodes {
-		target, err := kropengine.TargetOf(node.Template)
-		if err != nil || target != kropengine.TargetConsumer {
+		if node.Meta.Type == graph.NodeTypeExternal || node.Meta.Type == graph.NodeTypeExternalCollection {
+			continue
+		}
+		if kropengine.TargetForNode(node.Meta.ID, routing) != kropengine.TargetConsumer {
 			continue
 		}
 		gr := node.Meta.GVR.GroupResource()

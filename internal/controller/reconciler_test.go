@@ -101,7 +101,7 @@ func mkLabeledCM(name, uid string) *unstructured.Unstructured {
 func graphWithConfigMapNode() *krograph.Graph {
 	tmpl := &unstructured.Unstructured{}
 	tmpl.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
-	// Consumer is the default target (no routing annotation), matching TargetOf.
+	// Consumer is the default target (nil Routing → TargetForNode returns consumer).
 	return &krograph.Graph{Nodes: map[string]*krograph.Node{
 		"config": {Template: tmpl},
 	}}

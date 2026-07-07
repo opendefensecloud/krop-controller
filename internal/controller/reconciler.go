@@ -156,7 +156,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 			labels),
 	}
 
-	res, err := kropengine.New().Reconcile(ctx, rt, appliers)
+	// External-ref nodes are read (never applied) through the per-target Reader.
+	// Host is added in a later task.
+	readers := map[kropengine.Target]kropengine.Reader{
+		kropengine.TargetConsumer: kropengine.NewClientReader(consumerClient),
+		kropengine.TargetProvider: kropengine.NewClientReader(r.ProviderClient),
+	}
+
+	res, err := kropengine.New().Reconcile(ctx, rt, appliers, readers, r.Routing)
 	if err != nil {
 		return res, err
 	}
@@ -349,12 +356,16 @@ func (r *Reconciler) pruneChildren(ctx context.Context, consumerClient client.Cl
 }
 
 // childGVKs returns the distinct child GVKs of the given target from the graph.
+// External-ref nodes are skipped: we only read (never create) those objects, so
+// they must never be enumerated for GC or prune.
 func (r *Reconciler) childGVKs(target kropengine.Target) []schema.GroupVersionKind {
 	seen := map[schema.GroupVersionKind]bool{}
 	var out []schema.GroupVersionKind
 	for _, node := range r.Graph.Nodes {
-		t, err := kropengine.TargetOf(node.Template)
-		if err != nil || t != target {
+		if node.Meta.Type == krograph.NodeTypeExternal || node.Meta.Type == krograph.NodeTypeExternalCollection {
+			continue
+		}
+		if kropengine.TargetForNode(node.Meta.ID, r.Routing) != target {
 			continue
 		}
 		gvk := node.Template.GroupVersionKind()
