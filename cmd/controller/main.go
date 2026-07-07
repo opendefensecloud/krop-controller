@@ -55,6 +55,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mccontroller "sigs.k8s.io/multicluster-runtime/pkg/controller"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -342,8 +343,18 @@ func run() error {
 			return ctrl.Result{}, nil
 		})
 
+		// A blueprint spec change restarts this per-export manager (Supervisor
+		// Stop+Ensure) with a fresh graph — re-running this builder under the SAME
+		// controller name. controller-runtime keeps a PROCESS-GLOBAL registry of
+		// controller names (to catch duplicate metric labels) with no deregistration
+		// on manager stop, so the second build would fail with "controller with name
+		// ... already exists". The old manager is fully cancelled before the new one
+		// serves, so the name reuse is intentional: skip the uniqueness check (the
+		// documented escape hatch for this pattern).
+		skipNameValidation := true
 		if err := mcbuilder.ControllerManagedBy(imgr).
 			Named("krop-instance-" + exportName).
+			WithOptions(mccontroller.Options{SkipNameValidation: &skipNameValidation}).
 			For(newInstance(sb.gvk)).
 			Complete(reconcileFn); err != nil {
 			return fmt.Errorf("building krop-instance controller for %q: %w", exportName, err)
