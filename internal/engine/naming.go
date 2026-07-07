@@ -47,3 +47,13 @@ func ProviderChildName(clusterName, instanceName, originalName string) string {
 
 	return base + "-" + suffix
 }
+
+// LivenessRecordName derives the fixed, collision-free name of the provider-
+// workspace liveness record (a ConfigMap) for one instance. Keyed by the
+// consumer cluster + instance UID (null-joined so the tuple is un-collidable),
+// hashed short so the name is stable and DNS-safe regardless of input length.
+func LivenessRecordName(consumerCluster, instanceUID string) string {
+	sum := sha256.Sum256([]byte(consumerCluster + "\x00" + instanceUID))
+
+	return "krop-live-" + hex.EncodeToString(sum[:])[:16]
+}
