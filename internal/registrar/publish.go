@@ -87,6 +87,10 @@ func identityByGroupResource(ctx context.Context, c client.Client) (map[schema.G
 // (design §M2), which the supervisor discovers via internal/kcp.FindEndpointSlice.
 func UpsertAPIExport(ctx context.Context, c client.Client, exportName string, ars *apisv1alpha1.APIResourceSchema, claims []apisv1alpha2.PermissionClaim) error {
 	export := &apisv1alpha2.APIExport{}
+	// A server-side apply patch is serialized to JSON verbatim, so apiVersion/kind
+	// must be populated explicitly — the typed client does not inject them for an
+	// Apply patch, and kcp rejects a body with an empty GVK ("invalid object type").
+	export.SetGroupVersionKind(apisv1alpha2.SchemeGroupVersion.WithKind("APIExport"))
 	export.SetName(exportName)
 	export.Spec.Resources = []apisv1alpha2.ResourceSchema{{
 		Name:   ars.Spec.Names.Plural,
