@@ -97,6 +97,17 @@ Everything the controller does in the provider workspace it does as
   this with the exact provider-target GVKs their blueprints emit. **Do not** use
   a `*`/`*` wildcard — that re-creates the broad grant this model exists to
   remove.
+- **Liveness records + orphan sweep (design §11)** — provider-target children
+  orphan if a consumer unbinds the APIExport mid-life: the instance reconciler
+  stops running for that logical cluster, so its finalizer never fires. To recover,
+  the reconciler upserts a per-instance **liveness record** (a `ConfigMap` in the
+  `default` namespace, labeled `krop.opendefense.cloud/liveness=true`) on every
+  complete pass, and the `Sweeper` (`internal/controller/sweeper.go`, run on the
+  provider manager) deletes the recorded provider children + the record once the
+  record goes stale. Both run with the controller's own provider-workspace
+  identity, so **no extra RBAC** is required beyond the `configmaps`
+  create/get/list/watch/update/patch/delete grant `provider-rbac.yaml` already
+  ships (the same rule used for provider-target ConfigMaps).
 
 Apply `config/kcp/rbac/provider-rbac.yaml`.
 
