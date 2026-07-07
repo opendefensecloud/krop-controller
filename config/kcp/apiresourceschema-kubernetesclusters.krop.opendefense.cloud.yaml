@@ -1,0 +1,52 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v1alpha1.kubernetesclusters.krop.opendefense.cloud
+spec:
+  group: krop.opendefense.cloud
+  names:
+    kind: KubernetesCluster
+    listKind: KubernetesClusterList
+    plural: kubernetesclusters
+    singular: kubernetescluster
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    subresources:
+      status: {}
+    schema:
+      description: KubernetesCluster is the M1 walking-skeleton instance type.
+      type: object
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated. In CamelCase.
+          type: string
+        metadata:
+          type: object
+        spec:
+          type: object
+          properties:
+            region:
+              description: region selects the target region for the cluster config.
+              type: string
+          required:
+          - region
+        status:
+          type: object
+          properties:
+            configMapName:
+              description: |-
+                configMapName is the name of the ConfigMap the controller materializes
+                in the consumer workspace for this instance.
+              type: string
