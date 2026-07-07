@@ -36,6 +36,12 @@ type Result struct {
 	Ready bool
 	// Requeue is true when a node is not yet ready or a dependency is pending.
 	Requeue bool
+	// Complete is true when the loop processed all non-ignored nodes without
+	// early-returning on a pending dependency — safe to prune. It stays false
+	// on the GetDesired pending-dependency early return, because a pending pass
+	// applies only a prefix of the desired set and pruning then would delete
+	// still-desired children that were simply not re-applied this pass.
+	Complete bool
 }
 
 // Reconcile drives the runtime node-by-node in topological order. For each
@@ -92,6 +98,10 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 			res.Requeue = true
 		}
 	}
+
+	// Every non-ignored node was resolved and applied without a pending-dependency
+	// early return: the applied set is the complete desired set, so prune is safe.
+	res.Complete = true
 
 	return res, nil
 }

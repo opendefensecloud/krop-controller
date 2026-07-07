@@ -102,10 +102,13 @@ rules:
   - apiGroups: ["fulfil.krop.opendefense.cloud"]
     resources: ["agentrequests"]
     verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
-  # Include core configmaps ONLY if a blueprint emits provider-target
-  # ConfigMaps. krop's example blueprint targets its ConfigMap at the CONSUMER
-  # (authorized via permissionClaim, not this rule); drop this rule if none of
-  # your blueprints write provider-target ConfigMaps.
+  # core configmaps: REQUIRED (do not drop). The controller writes a per-instance
+  # "liveness record" ConfigMap into the provider workspace on each reconcile so
+  # the orphan sweeper can detect instances whose consumer unbound the APIExport
+  # mid-life (the finalizer never fires) and clean up their provider children.
+  # (This rule ALSO covers any provider-target ConfigMaps a blueprint emits;
+  # krop's example blueprint targets its ConfigMap at the CONSUMER, authorized
+  # via permissionClaim, not this rule.)
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]

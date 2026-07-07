@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -110,6 +111,39 @@ func TestLabelingApplier_MergesLabels_NoMutateCaller(t *testing.T) {
 	}
 	if _, ok := obj.GetLabels()["k"]; ok {
 		t.Fatal("caller object mutated")
+	}
+}
+
+func TestRecordingApplier_RecordsFinalIdentity(t *testing.T) {
+	// Chain: Qualifying(Recording(fake)) — the recorder is innermost, so it must
+	// observe the RENAMED name that Qualifying set before delegating.
+	inner := &fakeApplier{}
+	var sink []ChildID
+	rec := NewRecordingApplier(inner, &sink)
+	q := NewQualifyingApplier(rec, func(orig string) string { return "pfx-" + orig })
+
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": "record", "namespace": "ns1"},
+	}}
+	if _, err := q.Apply(context.Background(), obj); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(sink) != 1 {
+		t.Fatalf("recorded %d ChildIDs, want 1", len(sink))
+	}
+	got := sink[0]
+	want := ChildID{
+		GVK:       schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"},
+		Namespace: "ns1",
+		Name:      "pfx-record", // recorded the RENAMED name, not "record"
+	}
+	if got != want {
+		t.Fatalf("recorded ChildID = %+v, want %+v", got, want)
+	}
+	// The recorder must still delegate to inner.
+	if len(inner.applied) != 1 || inner.applied[0].GetName() != "pfx-record" {
+		t.Fatalf("inner not called with renamed object: %+v", inner.applied)
 	}
 }
 

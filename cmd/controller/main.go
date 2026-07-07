@@ -71,6 +71,17 @@ import (
 // relying on the (deprecated) rate-limited Requeue flag.
 const requeueInterval = 30 * time.Second
 
+// Orphan-sweep tuning (idea.md §11). A live instance refreshes its provider-side
+// liveness record on every complete pass, which the reconciler requeues every
+// requeueInterval (~30s). The sweeper deems a record's instance orphaned once its
+// lastReconciled is older than orphanStaleAfter and reclaims its provider
+// children. orphanStaleAfter MUST comfortably exceed requeueInterval so a live
+// instance whose refresh merely lagged is never swept — 5min gives ~10x margin.
+const (
+	orphanStaleAfter    = 5 * time.Minute
+	orphanSweepInterval = 1 * time.Minute
+)
+
 // endpointSlicePollInterval / endpointSliceTimeout bound the wait for the
 // APIExportEndpointSlice, which kcp auto-creates shortly after the Registrar
 // publishes the APIExport. The slice does not exist at the instant OnPublished
@@ -320,6 +331,18 @@ func run() error {
 		Named("krop-registrar").
 		Complete(reconcile.Func(reg.Reconcile)); err != nil {
 		return fmt.Errorf("building registrar controller: %w", err)
+	}
+
+	// Orphan sweeper: reclaims provider-target children whose consumer instance
+	// unbound the APIExport mid-life (so its finalizer never fired). It runs on
+	// the provider-workspace manager since it needs provider-workspace access,
+	// reconciling against the liveness records the instance reconciler refreshes.
+	if err := mgr.Add(&kropctrl.Sweeper{
+		ProviderClient: providerClient,
+		StaleAfter:     orphanStaleAfter,
+		SweepInterval:  orphanSweepInterval,
+	}); err != nil {
+		return fmt.Errorf("adding orphan sweeper: %w", err)
 	}
 
 	entryLog.Info("starting provider manager", "workspace", workspace)

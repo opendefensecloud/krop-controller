@@ -23,6 +23,11 @@ const (
 	LabelConsumerCluster = "krop.opendefense.cloud/consumer-cluster"
 	LabelBlueprint       = "krop.opendefense.cloud/blueprint"
 
+	// LabelLiveness marks a provider-workspace liveness record (a ConfigMap the
+	// reconciler refreshes on every complete pass) so the orphan sweeper can list
+	// only those records. See idea.md §11 (orphan risk on mid-life unbind).
+	LabelLiveness = "krop.opendefense.cloud/liveness"
+
 	// Finalizer on the instance drives cross-workspace child cleanup on delete.
 	Finalizer = "krop.opendefense.cloud/gc"
 )
