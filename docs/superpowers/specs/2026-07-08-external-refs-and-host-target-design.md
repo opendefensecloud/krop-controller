@@ -36,60 +36,76 @@ would be wrongly routed into the applier chain. The core change is a **read-only
 
 ---
 
-## Blueprint API change: the `routing` map
+## Blueprint API change: per-resource `target` field
 
-External refs **cannot** carry the `krop.opendefense.cloud/target` annotation (kro's
-`ExternalRefMetadata` has no annotations field, and our CRD embeds kro's spec verbatim). To route them,
-add a krop-owned `routing` map, inlined into our spec so everything stays under `spec` and kro's spec
-stays embedded and untouched:
+External refs cannot carry the `krop.opendefense.cloud/target` template annotation (kro's
+`ExternalRefMetadata` is only name/namespace/selector, and kro's `Resource` has no metadata block). To
+route them — and to unify routing for templates too — add a krop-owned per-resource `target` field. Our
+CRD wraps kro's tiny spec (only `Schema` + `Resources`), inlining kro's `Resource` and adding one
+enum-validated field:
 
 ```go
 // api/v1alpha1/resourcegraphdefinition_types.go
-type ResourceGraphDefinitionSpec struct {
-    krov1alpha1.ResourceGraphDefinitionSpec `json:",inline"`
-    // Routing maps a kro resource `id` to a krop target: "consumer" | "provider" | "host".
-    // It is the ONLY way to route externalRef resources (which cannot carry the per-template
-    // target annotation). For template resources the annotation still applies; a routing entry,
-    // if present, OVERRIDES it. Absent entry ⇒ existing default (annotation, else consumer).
-    Routing map[string]string `json:"routing,omitempty"`
+type Resource struct {
+    krov1alpha1.Resource `json:",inline"`   // id/template/externalRef/readyWhen/includeWhen/forEach reused
+    // Target routes this resource's object(s): consumer (default) | provider | host.
+    // +kubebuilder:validation:Enum=consumer;provider;host
+    // +optional
+    Target string `json:"target,omitempty"`
 }
+
+type ResourceGraphDefinitionSpec struct {
+    Schema    *krov1alpha1.Schema `json:"schema,omitempty"`
+    Resources []*Resource         `json:"resources,omitempty"`
+}
+
+// ToKro strips target into a routing map (resource id -> target) and returns clean
+// kro types for the graph builder. A missing/empty target defaults to consumer downstream.
+func (s ResourceGraphDefinitionSpec) ToKro() (krov1alpha1.ResourceGraphDefinitionSpec, map[string]string)
 ```
 
 ```yaml
 spec:
   resources:
     - id: vpc
-      externalRef: {apiVersion: net.example/v1, kind: VPC, metadata: {name: ${schema.spec.vpcName}}}
+      target: consumer                       # omitted ⇒ consumer (default)
+      externalRef: { apiVersion: net.example/v1, kind: VPC, metadata: { name: ${schema.spec.vpcName} } }
     - id: vm
-      template: { metadata: {annotations: {krop.opendefense.cloud/target: host}}, ... }
-  routing:
-    vpc: consumer
+      target: host
+      template: { ... }
 ```
 
-**Consequences of inlining** (mechanical, all in `internal/registrar` + `internal/engine/graphsource`):
-`bp.Spec` becomes our wrapper; kro-spec consumers read `bp.Spec.ResourceGraphDefinitionSpec`.
-`SpecHash` hashes the **whole** wrapper (routing included) so a routing-only change bumps the hash and
-republishes/restarts. controller-gen regenerates deepcopy + the CRD manifest.
+This **replaces** the template annotation mechanism. `target` is the single routing surface for all
+resources; the `krop.opendefense.cloud/target` annotation plus `TargetOf` / `StripRouting` /
+`TargetAnnotation` are removed, and existing fixtures / the example blueprint / docs migrate to the field.
 
-**Target resolution unifies** behind one helper, replacing the two current call sites that read
-`TargetOf(node.Template)` and the engine's per-object `TargetOf(obj)`:
+**Consequences** (all mechanical): our CRD spec becomes a thin wrapper over kro's; kro-spec consumers
+call `bp.Spec.ToKro()`. `SpecHash` hashes our wrapper (target included) so a routing change bumps the
+hash and republishes/restarts. controller-gen regenerates deepcopy + the CRD manifest (now carrying the
+enum-validated `target`). CRD enum validation rejects bad targets at apply time.
+
+**Target resolution** unifies behind the build-time routing map (`resourceID -> Target`), default
+consumer, replacing every `TargetOf(...)` call:
 
 ```
-TargetForNode(node, routing):
-  if routing[node.Meta.ID] present -> parse+validate it        (authoritative; externalRefs + overrides)
-  else                             -> TargetOf(node.Template)  (annotation; default consumer)
+targetForNode(nodeID, routing):
+  if routing[nodeID] set -> that Target
+  else                   -> TargetConsumer
 ```
 
-Per-node resolution is equivalent to today's per-object resolution (a node's forEach objects all share
-one template annotation) and matches how `childGVKs` already resolves target off the node.
+The routing map is threaded to the engine, the Reconciler (childGVKs / prune / delete), and claims
+derivation — all keyed by resource id (== `node.Spec.Meta.ID`).
 
 ---
 
 ## Component changes
 
-### 1. Engine — read-only branch + `Reader` (`internal/engine`)
+### 1. Engine — read-only branch + `Reader` + routing (`internal/engine`)
 
-- New `Target`: `TargetHost Target = "host"`. `TargetOf` accepts it; validation lists all three.
+- `Target` gains `TargetHost Target = "host"`; `TargetConsumer` / `TargetProvider` unchanged.
+- Remove `TargetOf` / `StripRouting` / `TargetAnnotation` (annotation routing is gone). Add
+  `TargetForNode(id string, routing map[string]Target) Target` (default consumer) and a
+  `ParseTarget(string) (Target, error)` used by `ToKro`/validation.
 - New `Reader` interface (read side of I/O, mirroring `Applier`):
   ```go
   type Reader interface {
@@ -99,28 +115,30 @@ one template annotation) and matches how `childGVKs` already resolves target off
   ```
   Backed by a `client.Client` per target (`ClientReader`). Registered as `map[Target]Reader`.
 - `Reconcile(ctx, rt, appliers, readers, routing)` — per node:
-  - resolve `target := TargetForNode(node, routing)`.
+  - `target := TargetForNode(node.Spec.Meta.ID, routing)`.
   - switch `node.Spec.Meta.Type`:
     - `NodeTypeExternal`: `readers[target].Get(gvk, desired.Namespace, desired.Name)` →
       `SetObserved([obj])`; **NotFound ⇒ `Ready=false, Requeue=true`, continue** (mirror `ErrDataPending`).
     - `NodeTypeExternalCollection`: `List(gvk, ns, selector)` → `SetObserved(items)`.
-    - default (`Resource`/`Collection`/`Instance`): existing applier path, unchanged.
+    - default (`Resource`/`Collection`/`Instance`): existing applier path (no `StripRouting` — target
+      now comes from routing, not the object).
   - external nodes are **never** applied, labeled, owned, renamed, or recorded (no `ChildID`).
   - `CheckReadiness()` after observe, same as regular nodes.
-- `Result.Complete` semantics unchanged: a not-found external ref sets `Requeue` and returns before
-  `Complete` is set (prune stays disabled while any dependency — external or otherwise — is pending).
+- Missing applier/reader for a target ⇒ hard error (fail-closed), as today.
 
-### 2. GC / prune — exclude external nodes (`internal/controller/reconciler.go`)
+### 2. GC / prune — exclude external nodes, add host (`internal/controller/reconciler.go`)
 
-- `childGVKs`, `deleteChildren`, `pruneChildren` must **skip external nodes** (we don't own them; deleting
-  them would destroy provider infrastructure). Gate on `node.Spec.Meta.Type` (external ⇒ skip) in
-  `childGVKs` (the single enumeration all three use).
-- `childGVKs`/prune/delete gain the `TargetHost` → `HostClient` entry (see §4).
-- Target resolution in `childGVKs` switches to `TargetForNode(node, routing)`.
+- `childGVKs`, `deleteChildren`, `pruneChildren` must **skip external nodes** (`node.Spec.Meta.Type` is
+  external ⇒ skip; we don't own them, deleting them would destroy provider infrastructure).
+- `childGVKs` resolves target via `TargetForNode(node.Spec.Meta.ID, r.Routing)` (replacing
+  `TargetOf(node.Template)`).
+- delete/prune target→client maps gain `TargetHost` → `HostClient` (when non-nil).
+- Reconciler gains `Routing map[kropengine.Target]...` — actually `Routing map[string]kropengine.Target`
+  (id→target) — and `HostClient client.Client`.
 
 ### 3. Permission claims — read-only for external consumer refs (`internal/registrar/claims.go`)
 
-Split consumer-target nodes by whether they are writable (template) or external (read-only):
+Split consumer-target nodes by writable (template) vs external (read-only):
 
 | node | target | claim |
 |------|--------|-------|
@@ -128,27 +146,26 @@ Split consumer-target nodes by whether they are writable (template) or external 
 | externalRef, consumer | consumer | **read-only** claim: `get, list, watch` |
 | template/externalRef, provider or host | — | **no claim** (own client + own/host RBAC) |
 
-- `ForeignConsumerGRs` → returns two sets (writable, external) or annotates each GR with a verb set.
-- `DeriveClaims` emits `claimVerbs` (CRUD) for writable and a new `readOnlyVerbs = {get,list,watch}` for
+- `ForeignConsumerGRs(g, instanceGR, routing)` returns writable + external GR sets (keyed off
+  `node.Spec.Meta.Type` and the routing map).
+- `DeriveClaims` emits `claimVerbs` (CRUD) for writable GRs and `readOnlyVerbs = {get,list,watch}` for
   external GRs. IdentityHash resolution is **unchanged**: a foreign external CRD type still needs its
-  owning APIExport bound in the provider workspace to resolve its hash; `validateClaims` still rejects an
-  unresolved foreign claim. Core types (empty group) carry empty identityHash and are allowed.
-  This preserves the existing invariant and is documented as a known constraint (the provider must bind
-  the foreign export it wants to read, exactly as for foreign writes today).
+  owning APIExport bound in the provider workspace; `validateClaims` still rejects an unresolved foreign
+  claim. Core types (empty group) carry empty identityHash and are allowed. Documented as the inherited
+  foreign-binding invariant (unchanged from foreign writes today).
 
 ### 4. Host target — third write plane (`cmd/controller/main.go`, `internal/controller`)
 
 - **Host client:** `rest.InClusterConfig()` by default; `--host-kubeconfig <path>` flag overrides
   (dev / out-of-cluster). If neither yields a config, the host client is **nil**: no host applier/reader
   is registered, and a blueprint routing to host fails loudly with the engine's existing
-  "no applier configured for target host" error (fail-closed, no silent drop).
+  "no applier/reader configured for target host" error (fail-closed, no silent drop).
 - **Host applier chain** mirrors provider (collision-free names across consumers, GC labels):
   `LabelingApplier(QualifyingApplier(ProviderChildName)(RecordingApplier(SSAApplier(hostClient))))`.
   Host children keep the template's namespace; `ProviderChildName` (cluster+instance+name hash) makes
   names collision-free within it. No `OwnerRefApplier` (cross-cluster, like provider).
 - **Host reader:** `ClientReader{hostClient}` registered at `TargetHost`.
-- **Reconciler** gains `HostClient client.Client` (nil ⇒ host maps omitted). Appliers/readers/childGVKs/
-  prune/delete maps include host when non-nil.
+- **Reconciler** gains `HostClient client.Client` (nil ⇒ host maps omitted).
 
 ### 5. Orphan sweep — host children must not leak (`internal/controller`)
 
@@ -160,7 +177,7 @@ fires). Extend the liveness mechanism:
 - `Sweeper` gains `HostClient client.Client` (nil ⇒ host sweep skipped). `sweepChildren` sweeps provider
   children via `ProviderClient` and host children via `HostClient`, each by the recorded GVK list +
   instance-uid label. The record itself stays in the provider workspace (single source of truth).
-- Wiring: `cmd/controller/main.go` passes `HostClient` to both `Reconciler` and `Sweeper`.
+- `cmd/controller/main.go` passes `HostClient` to both `Reconciler` and `Sweeper`.
 
 ---
 
@@ -182,11 +199,12 @@ host cluster: VM (template, target=host) <--SSA-- QualifyingApplier(ProviderChil
 
 ## Testing
 
-**Unit (`internal/engine`, `internal/registrar`):**
+**Unit (`internal/engine`, `internal/registrar`, `api/v1alpha1`):**
+- `ToKro`: builds routing map from `target`; empty target absent from map (⇒ consumer default);
+  round-trips kro fields; invalid target rejected (also caught by CRD enum, but validate in code too).
 - Engine external branch: `NodeTypeExternal` Get → observed feeds downstream CEL; NotFound ⇒
   `Ready=false,Requeue=true` and **no** apply/label/record; `NodeTypeExternalCollection` List by selector.
-- `TargetForNode`: routing entry overrides annotation; external node with no routing entry defaults
-  consumer; invalid target value errors.
+- `TargetForNode`: routing entry honored; missing id ⇒ consumer.
 - Host applier chain: rename + labels + SSA to the host client; recorded for prune.
 - Claims: consumer external ref ⇒ read-only verbs; consumer template ⇒ CRUD; provider/host external ⇒ no
   claim; foreign external with unresolved identity ⇒ `validateClaims` rejects.
@@ -198,7 +216,7 @@ host cluster: VM (template, target=host) <--SSA-- QualifyingApplier(ProviderChil
   modified/deleted (survives instance delete).
 - Host target: point the host client at the envtest apiserver; assert a `host`-routed child is created
   with a collision-free name + GC labels, is pruned on removal, and is swept on simulated mid-life orphan
-  (stale liveness record with `hostChildGVKs`).
+  (stale liveness record carrying `hostChildGVKs`).
 
 **Full-stack (optional, `test/e2e`):** extend one spec with a host-target child once the envtest path is
 green; not required for the feature to land.
@@ -207,12 +225,13 @@ green; not required for the feature to land.
 
 ## Documentation
 
-- `docs/blueprints.md`: `externalRef` + the `routing` map, with the VPC/VM example.
+- `docs/blueprints.md`: the `target` field + `externalRef`, with the VPC/VM example; note annotation
+  routing is replaced by `target`.
 - `docs/permissions.md`: read-only claims for consumer external refs; host-cluster RBAC is the provider's
   responsibility; `--host-kubeconfig` / in-cluster host client.
 - `docs/architecture.md`: three-plane composition diagram (read plane + host write plane).
-- ADR `docs/decisions/0011-external-refs-and-host-target.md`: why the `routing` map (kro schema
-  constraint), host client sourcing, and the identityHash invariant for external refs.
+- ADR `docs/decisions/0011-external-refs-and-host-target.md`: why the per-resource `target` field (vs
+  annotation / namespace-prefix / top-level map), host client sourcing, and the identityHash invariant.
 - Chart: optional `--host-kubeconfig` value + host-kubeconfig secret mount (mirrors the existing
   kcp-kubeconfig mount); in-cluster default needs no host ClusterRole from *us* (provider-managed).
 
@@ -220,9 +239,10 @@ green; not required for the feature to land.
 
 ## Risks / decisions
 
-- **`routing` adds a blueprint field.** Forced by kro's fixed externalRef schema; the only in-schema home
-  for external-ref routing. Templates keep annotations (no migration); routing overrides when present.
+- **`target` replaces the annotation.** Single explicit routing surface, uniform for templates +
+  externalRefs, enum-validated at the CRD. Existing blueprints/fixtures/docs migrate (pre-release, low
+  cost). Default when omitted is consumer (back-compatible default).
 - **External-ref identityHash constraint** (provider must bind the foreign export to read it) is inherited
   from the existing foreign-write model, not new — documented, not relaxed here.
-- **Host orphan sweep** must ship with the host target, or host children leak on mid-life unbind. Included.
+- **Host orphan sweep** ships with the host target, or host children leak on mid-life unbind. Included.
 - **Host client nil ⇒ fail-closed:** blueprints routing to host error clearly rather than silently drop.
