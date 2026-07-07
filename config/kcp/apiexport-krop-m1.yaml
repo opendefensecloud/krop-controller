@@ -9,7 +9,10 @@ spec:
     schema: v1alpha1.kubernetesclusters.krop.opendefense.cloud
     storage:
       crd: {}
-  # M1 has no foreign children (the only child is a core ConfigMap in the
-  # consumer workspace, reached through the APIExport virtual workspace with no
-  # claim). permissionClaims arrive in M2 with foreign-typed children.
-  permissionClaims: []
+  # The consumer-target ConfigMap is written through the APIExport virtual
+  # workspace as the APIExport identity, so M2 claims core configmaps here; the
+  # consumer's APIBinding must accept it (test/fixtures/apibinding-*.yaml).
+  permissionClaims:
+    - group: ""
+      resource: configmaps
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

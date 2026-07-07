@@ -46,9 +46,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
-	kroruntime "github.com/kubernetes-sigs/kro/pkg/runtime"
-
+	kropctrl "go.opendefense.cloud/krop-controller/internal/controller"
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 	kropkcp "go.opendefense.cloud/krop-controller/internal/kcp"
 )
@@ -149,54 +147,31 @@ func run() error {
 	}
 
 	instanceGVK := schema.GroupVersionKind{Group: instanceGroup, Version: instanceVersion, Kind: instanceKind}
-	eng := kropengine.New()
 
-	reconciler := mcreconcile.Func(func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+	// The provider workspace is the one this controller is configured against
+	// (where the blueprint's APIExport lives); the engine's identity has RBAC
+	// there, so provider-target children are written with a direct client.
+	providerClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return fmt.Errorf("provider client: %w", err)
+	}
+	reconciler := &kropctrl.Reconciler{
+		Graph:          compiled,
+		ProviderClient: providerClient,
+		InstanceGVK:    instanceGVK,
+	}
+
+	reconcileFn := mcreconcile.Func(func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 		l := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "name", req.Name)
 
 		cl, err := mgr.GetCluster(ctx, req.ClusterName)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("getting cluster %q: %w", req.ClusterName, err)
 		}
-		consumer := cl.GetClient()
 
-		inst := &unstructured.Unstructured{}
-		inst.SetGroupVersionKind(instanceGVK)
-		if err := consumer.Get(ctx, req.NamespacedName, inst); err != nil {
-			// Deleted between event and reconcile: nothing to do (M1 has no
-			// finalizer/child GC yet).
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-
-		rt, err := kroruntime.FromGraph(compiled, inst, krograph.RGDConfig{
-			MaxCollectionSize:          1000,
-			MaxCollectionDimensionSize: 1000,
-		})
+		res, err := reconciler.Reconcile(ctx, cl.GetClient(), string(req.ClusterName), req.NamespacedName)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("building runtime: %w", err)
-		}
-
-		appliers := map[kropengine.Target]kropengine.Applier{
-			kropengine.TargetConsumer: kropengine.NewSSAApplier(consumer),
-			// kropengine.TargetProvider is added in M2.
-		}
-		res, err := eng.Reconcile(ctx, rt, appliers)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("reconciling instance: %w", err)
-		}
-
-		// Project blueprint-mapped status.* onto the live instance. Best effort:
-		// a failed status update is logged and retried on the next pass.
-		if desiredInstance, perr := kropengine.ProjectStatus(rt); perr == nil {
-			if status, found, _ := unstructured.NestedMap(desiredInstance.Object, "status"); found {
-				if serr := unstructured.SetNestedMap(inst.Object, status, "status"); serr != nil {
-					l.Error(serr, "setting projected status")
-				} else if uerr := consumer.Status().Update(ctx, inst); uerr != nil {
-					l.Error(uerr, "status update")
-				}
-			}
-		} else {
-			l.Error(perr, "projecting status")
+			return ctrl.Result{}, err
 		}
 
 		if res.Requeue {
@@ -210,7 +185,7 @@ func run() error {
 	if err := mcbuilder.ControllerManagedBy(mgr).
 		Named("krop-instance").
 		For(newInstance(instanceGVK)).
-		Complete(reconciler); err != nil {
+		Complete(reconcileFn); err != nil {
 		return fmt.Errorf("building krop-instance controller: %w", err)
 	}
 

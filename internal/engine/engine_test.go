@@ -52,7 +52,7 @@ func TestReconcile_AppliesConsumerChild_StripsRouting(t *testing.T) {
 	consumer := &fakeApplier{}
 
 	e := New()
-	res, err := e.Reconcile(context.Background(), rt, map[Target]Applier{TargetConsumer: consumer})
+	res, err := e.Reconcile(context.Background(), rt, map[Target]Applier{TargetConsumer: consumer, TargetProvider: &fakeApplier{}})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestReconcile_ProjectsInstanceStatus(t *testing.T) {
 	consumer := &fakeApplier{}
 
 	e := New()
-	if _, err := e.Reconcile(context.Background(), rt, map[Target]Applier{TargetConsumer: consumer}); err != nil {
+	if _, err := e.Reconcile(context.Background(), rt, map[Target]Applier{TargetConsumer: consumer, TargetProvider: &fakeApplier{}}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	// The blueprint maps status.configMapName = ${config.metadata.name}.
@@ -103,5 +103,29 @@ func TestReconcile_ProjectsInstanceStatus(t *testing.T) {
 	name, _, _ := unstructured.NestedString(desiredInstance.Object, "status", "configMapName")
 	if name != "eu-cluster-config" {
 		t.Fatalf("status.configMapName = %q, want eu-cluster-config", name)
+	}
+}
+
+func TestReconcile_RoutesToBothTargets(t *testing.T) {
+	rt := newRuntime(t, newInstance("eu"))
+	consumer := &fakeApplier{}
+	provider := &fakeApplier{}
+
+	e := New()
+	res, err := e.Reconcile(context.Background(), rt, map[Target]Applier{
+		TargetConsumer: consumer,
+		TargetProvider: provider,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(consumer.applied) != 1 || consumer.applied[0].GetName() != "eu-cluster-config" {
+		t.Fatalf("consumer applier got %d objs: %+v", len(consumer.applied), consumer.applied)
+	}
+	if len(provider.applied) != 1 || provider.applied[0].GetName() != "eu-provider-record" {
+		t.Fatalf("provider applier got %d objs: %+v", len(provider.applied), provider.applied)
+	}
+	if !res.Ready {
+		t.Fatalf("want Ready, got %+v", res)
 	}
 }
