@@ -6,6 +6,9 @@ declarative `ResourceGraphDefinition` blueprint, krop publishes it as a bindable
 materialized across the consumer and provider workspaces — no Go controller per
 offering.
 
+For the project landing page (quickstart, feature overview, install), see the
+[repository README](../README.md).
+
 ## Start here
 
 - [getting-started.md](getting-started.md) — install the controller, mint its kcp
@@ -14,6 +17,20 @@ offering.
   schema, resources, CEL, and consumer/provider target routing.
 - [operations.md](operations.md) — running krop in production: deployment,
   upgrades, observability, and troubleshooting.
+
+## Guides
+
+Task-oriented how-tos (recipes and tutorials) — see [guides/](guides/) for the
+index:
+
+- [guides/writing-your-first-blueprint.md](guides/writing-your-first-blueprint.md)
+  — a from-scratch tutorial building a minimal single-child blueprint.
+- [guides/cross-target-dependencies.md](guides/cross-target-dependencies.md) —
+  the provider-status → consumer-child CEL recipe (pend-until-ready).
+- [guides/deploying-in-production.md](guides/deploying-in-production.md) — a
+  concise deploy recipe: identity, RBAC, `helm install` with HA + metrics.
+- [guides/troubleshooting.md](guides/troubleshooting.md) — problem → cause → fix
+  with concrete `kubectl` checks.
 
 ## Reference
 
