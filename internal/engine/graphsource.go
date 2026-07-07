@@ -39,11 +39,17 @@ type EndpointGraphSource struct {
 
 // NewEndpointGraphSource constructs the builder from a workspace-scoped config.
 // The config must serve discovery/OpenAPI — NewBuilder dereferences it eagerly.
+// kro's graph.NewBuilder (via apiutil.NewDynamicRESTMapper) requires a non-nil
+// http.Client, so we derive one from the config's transport (TLS, auth, proxy).
 func NewEndpointGraphSource(cfg *rest.Config) (*EndpointGraphSource, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("EndpointGraphSource: nil rest.Config")
 	}
-	b, err := graph.NewBuilder(cfg, nil)
+	httpClient, err := rest.HTTPClientFor(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("EndpointGraphSource: http client: %w", err)
+	}
+	b, err := graph.NewBuilder(cfg, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("EndpointGraphSource: %w", err)
 	}

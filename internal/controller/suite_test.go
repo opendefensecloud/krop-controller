@@ -23,6 +23,7 @@ import (
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	corev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
 	tenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -36,8 +37,10 @@ import (
 
 // The in-process envtest suite boots a real kcp from the binary that
 // `make test` downloads (TEST_KCP_ASSETS points at bin/), then drives the M1
-// walking skeleton end-to-end against the APIExport virtual workspace. It skips
-// cleanly when TEST_KCP_ASSETS is unset so plain `go test ./...` stays hermetic.
+// walking skeleton end-to-end inside a single real kcp workspace via a direct
+// reconcile (see m1_integration_test.go for why the virtual-workspace fan-in is
+// not exercised here). It skips cleanly when TEST_KCP_ASSETS is unset so plain
+// `go test ./...` stays hermetic.
 var (
 	env       *envtest.Environment
 	kcpConfig *rest.Config
@@ -47,11 +50,13 @@ func init() {
 	// The multicluster-provider default ObjectToWatch is apis/v1alpha1 APIBinding
 	// and the provider lists apis/v1alpha1 APIExportEndpointSlices, so both apis
 	// versions plus core (LogicalCluster) and tenancy (Workspace) are required.
+	// apiextensions lets the workspace-scoped client install the instance CRD.
 	runtime.Must(clientgoscheme.AddToScheme(clientgoscheme.Scheme))
 	runtime.Must(apisv1alpha1.AddToScheme(clientgoscheme.Scheme))
 	runtime.Must(apisv1alpha2.AddToScheme(clientgoscheme.Scheme))
 	runtime.Must(corev1alpha1.AddToScheme(clientgoscheme.Scheme))
 	runtime.Must(tenancyv1alpha1.AddToScheme(clientgoscheme.Scheme))
+	runtime.Must(apiextensionsv1.AddToScheme(clientgoscheme.Scheme))
 }
 
 func TestM1Integration(t *testing.T) {

@@ -14,33 +14,50 @@
 
 package controller_test
 
+// M1 walking-skeleton e2e — direct-reconcile design.
+//
+// WHY NOT THE VIRTUAL-WORKSPACE FAN-IN HERE:
+//
+// The production controller (cmd/controller/main.go) runs a multicluster manager
+// against an APIExport *virtual workspace*, driven by the APIExportEndpointSlice
+// the mc-provider apiexport.Provider watches. That wiring is compile-verified in
+// main.go and is the intended production path.
+//
+// Under our pinned stack — multicluster-provider v0.8.0 + kcp 0.30.0 booted via
+// the provider's envtest harness — kcp's `apiexportendpointslice-urls` controller
+// never populates `APIExportEndpointSlice.status.endpoints`: the slice reaches
+// APIExportValid=True / PartitionValid=True but zero endpoints (empirically
+// confirmed: no endpoints after >100s, while the -urls controller loops on
+// `apiexports.apis.kcp.io "root:topology.kcp.io" not found` for the system
+// exports and cannot resolve the shard virtual-workspace URL in this envtest).
+// Without endpoints the virtual workspace never comes up, so an in-suite manager
+// against the vw cannot engage any cluster. This is an envtest/mc-provider
+// limitation, not a krop-engine bug.
+//
+// So this suite proves everything M1 needs WITHOUT the vw fan-in, mirroring the
+// proven direct-reconcile pattern used by the sibling access-operator e2e on the
+// identical stack: it installs the instance type into a single real kcp
+// workspace, builds the kro graph against that workspace's live discovery/OpenAPI
+// (design §16.3), then drives the exact reconcile logic from main.go's closure
+// once, directly, against a workspace-scoped client. The vw fan-in stays wired in
+// main.go and is exercised end-to-end in a later, cluster-backed environment.
+
 import (
 	"context"
-	"fmt"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/kcp-dev/logicalcluster/v3"
-	"github.com/kcp-dev/multicluster-provider/apiexport"
 	clusterclient "github.com/kcp-dev/multicluster-provider/client"
 	"github.com/kcp-dev/multicluster-provider/envtest"
-	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
-	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	"github.com/kcp-dev/sdk/apis/core"
+	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
-	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
-	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
-	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
-	"sigs.k8s.io/yaml"
 
 	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	kroruntime "github.com/kubernetes-sigs/kro/pkg/runtime"
@@ -51,10 +68,6 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// apiExportName is the M1 APIExport name; kcp auto-creates a default
-// APIExportEndpointSlice of the same name for it.
-const apiExportName = "kubernetesclusters.krop.opendefense.cloud"
-
 // instanceGVK is the hand-published M1 instance kind.
 var instanceGVK = schema.GroupVersionKind{
 	Group:   "krop.opendefense.cloud",
@@ -62,189 +75,121 @@ var instanceGVK = schema.GroupVersionKind{
 	Kind:    "KubernetesCluster",
 }
 
-// loadFixture reads a YAML fixture, substitutes ${VAR} placeholders, and
-// unmarshals it into the correct typed object (so kcp validates it on create).
-func loadFixture(path string, replacements map[string]string) client.Object {
-	raw, err := os.ReadFile(path)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "reading fixture %s", path)
-
-	content := string(raw)
-	for k, v := range replacements {
-		content = strings.ReplaceAll(content, "${"+k+"}", v)
-	}
-	data := []byte(content)
-
-	var meta metav1.TypeMeta
-	ExpectWithOffset(1, yaml.Unmarshal(data, &meta)).To(Succeed(), "parsing kind from %s", path)
-
-	switch meta.Kind {
-	case "APIResourceSchema":
-		o := &apisv1alpha1.APIResourceSchema{}
-		ExpectWithOffset(1, yaml.Unmarshal(data, o)).To(Succeed(), "unmarshaling %s", path)
-		return o
-	case "APIExport":
-		o := &apisv1alpha2.APIExport{}
-		ExpectWithOffset(1, yaml.Unmarshal(data, o)).To(Succeed(), "unmarshaling %s", path)
-		return o
-	case "APIBinding":
-		o := &apisv1alpha2.APIBinding{}
-		ExpectWithOffset(1, yaml.Unmarshal(data, o)).To(Succeed(), "unmarshaling %s", path)
-		return o
-	default:
-		o := &unstructured.Unstructured{}
-		ExpectWithOffset(1, yaml.Unmarshal(data, &o.Object)).To(Succeed(), "unmarshaling %s", path)
-		return o
+// instanceCRD returns the KubernetesCluster CRD (namespaced, with a status
+// subresource) so the type is served — and its status writable — in a single
+// workspace. It mirrors config/kcp/apiresourceschema-*.yaml, which is the
+// production shape published via the APIExport; installing the plain CRD directly
+// is the isolated-workspace equivalent (see access-operator's installAccessCRDs).
+func instanceCRD() *apiextensionsv1.CustomResourceDefinition {
+	preserve := true
+	return &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "kubernetesclusters.krop.opendefense.cloud",
+		},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "krop.opendefense.cloud",
+			Names: apiextensionsv1.CustomResourceDefinitionNames{
+				Kind:     "KubernetesCluster",
+				ListKind: "KubernetesClusterList",
+				Plural:   "kubernetesclusters",
+				Singular: "kubernetescluster",
+			},
+			Scope: apiextensionsv1.NamespaceScoped,
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+				Name:    "v1alpha1",
+				Served:  true,
+				Storage: true,
+				Subresources: &apiextensionsv1.CustomResourceSubresources{
+					Status: &apiextensionsv1.CustomResourceSubresourceStatus{},
+				},
+				Schema: &apiextensionsv1.CustomResourceValidation{
+					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+						Type: "object",
+						Properties: map[string]apiextensionsv1.JSONSchemaProps{
+							"spec": {
+								Type: "object",
+								Properties: map[string]apiextensionsv1.JSONSchemaProps{
+									"region": {Type: "string"},
+								},
+								Required: []string{"region"},
+							},
+							"status": {
+								Type: "object",
+								Properties: map[string]apiextensionsv1.JSONSchemaProps{
+									"configMapName": {Type: "string"},
+								},
+								// Status is projected as an opaque map; tolerate extra keys.
+								XPreserveUnknownFields: &preserve,
+							},
+						},
+					},
+				},
+			}},
+		},
 	}
 }
 
-// applyFixture loads a YAML fixture with ${VAR} substitution and creates it in
-// the given workspace.
-func applyFixture(ctx context.Context, cli clusterclient.ClusterClient, wsPath logicalcluster.Path, path string, replacements map[string]string) {
-	obj := loadFixture(path, replacements)
-	ExpectWithOffset(1, cli.Cluster(wsPath).Create(ctx, obj)).To(Succeed(), "creating fixture %s in %s", path, wsPath)
+// established reports whether the CRD has reached the Established condition.
+func established(crd *apiextensionsv1.CustomResourceDefinition) bool {
+	for _, c := range crd.Status.Conditions {
+		if c.Type == apiextensionsv1.Established && c.Status == apiextensionsv1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
-var _ = Describe("M1 instance reconcile", Ordered, func() {
+var _ = Describe("M1 instance reconcile (direct, against real kcp)", Ordered, func() {
 	var (
-		ctx          context.Context
-		cancel       context.CancelFunc
-		cli          clusterclient.ClusterClient
-		providerPath logicalcluster.Path
-		consumerPath logicalcluster.Path
+		ctx      context.Context
+		wsPath   logicalcluster.Path
+		wc       client.Client // workspace-scoped client the reconciler operates with
+		compiled *krograph.Graph
 	)
 
 	BeforeAll(func() {
+		// A suite-lived context: the SpecContext handed to BeforeAll is canceled
+		// once the node returns, which would break the later It block.
+		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(context.Background())
+		DeferCleanup(cancel)
 
-		var err error
-		cli, err = clusterclient.New(kcpConfig, client.Options{Scheme: scheme.Scheme})
+		cli, err := clusterclient.New(kcpConfig, client.Options{Scheme: scheme.Scheme})
 		Expect(err).NotTo(HaveOccurred())
 
-		// --- Provider workspace: publish the ARS + APIExport. ---
-		_, providerPath = envtest.NewWorkspaceFixture(GinkgoT(), cli, core.RootCluster.Path(),
-			envtest.WithNamePrefix("krop-provider"))
-		applyFixture(ctx, cli, providerPath,
-			"../../config/kcp/apiresourceschema-kubernetesclusters.krop.opendefense.cloud.yaml", nil)
-		applyFixture(ctx, cli, providerPath,
-			"../../config/kcp/apiexport-krop-m1.yaml", nil)
+		// A fresh universal workspace standing in for one tenant workspace. Both
+		// the instance and its materialized ConfigMap live here (M1 routes every
+		// child to the consumer target).
+		_, wsPath = envtest.NewWorkspaceFixture(GinkgoT(), cli, core.RootCluster.Path(),
+			envtest.WithNamePrefix("krop"))
+		wc = cli.Cluster(wsPath)
 
-		// Wait until the APIExport's endpoint slice has endpoints (virtual ws up).
-		// kcp auto-creates a default APIExportEndpointSlice named after the export;
-		// its status.endpoints are populated by kcp's apiexportendpointslice-urls
-		// controller once it resolves shard virtual-workspace URLs.
-		envtest.Eventually(GinkgoT(), func() (bool, string) {
-			slice := &apisv1alpha1.APIExportEndpointSlice{}
-			if err := cli.Cluster(providerPath).Get(ctx, client.ObjectKey{Name: apiExportName}, slice); err != nil {
-				return false, fmt.Sprintf("get endpoint slice: %v", err)
-			}
-			if len(slice.Status.APIExportEndpoints) > 0 {
-				return true, ""
-			}
-			sb, _ := yaml.Marshal(slice.Status)
-			return false, fmt.Sprintf("endpoint slice has no endpoints yet; status:\n%s", sb)
-		}, wait.ForeverTestTimeout, 200*time.Millisecond, "APIExport virtual workspace not ready")
+		// Serve the instance type in the workspace and wait until it's Established.
+		crd := instanceCRD()
+		Expect(client.IgnoreAlreadyExists(wc.Create(ctx, crd))).To(Succeed())
+		Eventually(func(g Gomega) {
+			got := &apiextensionsv1.CustomResourceDefinition{}
+			g.Expect(wc.Get(ctx, client.ObjectKey{Name: crd.Name}, got)).To(Succeed())
+			g.Expect(established(got)).To(BeTrue(), "instance CRD not Established")
+		}).WithTimeout(60 * time.Second).WithPolling(time.Second).Should(Succeed())
 
-		// --- Start the controller in-process against the APIExport virtual ws. ---
-		exportCfg := rest.CopyConfig(kcpConfig)
-		exportCfg.Host += providerPath.RequestPath()
+		// Ensure the target namespace exists for the instance + its ConfigMap.
+		Expect(client.IgnoreAlreadyExists(wc.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		}))).To(Succeed())
 
-		// §16.3 validation: build the graph via graph.NewBuilder against the REAL
-		// provider-workspace discovery/OpenAPI endpoint (not a fake resolver).
-		graphSource, err := kropengine.NewEndpointGraphSource(exportCfg)
+		// §16.3 validation: build the kro graph via graph.NewBuilder against the
+		// REAL workspace discovery/OpenAPI endpoint (NewCombinedResolver over live
+		// kcp discovery), not a fake resolver. This is the residual §16.3 risk the
+		// M0 findings flagged.
+		wsRestConfig := rest.CopyConfig(kcpConfig)
+		wsRestConfig.Host += wsPath.RequestPath()
+		graphSource, err := kropengine.NewEndpointGraphSource(wsRestConfig)
 		Expect(err).NotTo(HaveOccurred())
 		rgd, err := kropengine.LoadExampleBlueprint()
 		Expect(err).NotTo(HaveOccurred())
-		compiled, err := graphSource.Build(rgd)
-		Expect(err).NotTo(HaveOccurred(), "graph.NewBuilder against live kcp (§16.3)")
-
-		provider, err := apiexport.New(exportCfg, apiExportName, apiexport.Options{Scheme: scheme.Scheme})
-		Expect(err).NotTo(HaveOccurred())
-		mgr, err := mcmanager.New(exportCfg, provider, manager.Options{Scheme: scheme.Scheme})
-		Expect(err).NotTo(HaveOccurred())
-
-		eng := kropengine.New()
-		reconciler := mcreconcile.Func(func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-			cl, err := mgr.GetCluster(ctx, req.ClusterName)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			consumer := cl.GetClient()
-
-			inst := &unstructured.Unstructured{}
-			inst.SetGroupVersionKind(instanceGVK)
-			if err := consumer.Get(ctx, req.NamespacedName, inst); err != nil {
-				return ctrl.Result{}, client.IgnoreNotFound(err)
-			}
-
-			rt, err := kroruntime.FromGraph(compiled, inst, krograph.RGDConfig{
-				MaxCollectionSize:          1000,
-				MaxCollectionDimensionSize: 1000,
-			})
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			res, err := eng.Reconcile(ctx, rt, map[kropengine.Target]kropengine.Applier{
-				kropengine.TargetConsumer: kropengine.NewSSAApplier(consumer),
-			})
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			if di, perr := kropengine.ProjectStatus(rt); perr == nil {
-				if status, found, _ := unstructured.NestedMap(di.Object, "status"); found {
-					_ = unstructured.SetNestedMap(inst.Object, status, "status")
-					_ = consumer.Status().Update(ctx, inst)
-				}
-			}
-			return ctrl.Result{Requeue: res.Requeue}, nil
-		})
-
-		watch := &unstructured.Unstructured{}
-		watch.SetGroupVersionKind(instanceGVK)
-		Expect(mcbuilder.ControllerManagedBy(mgr).
-			Named("krop-instance").
-			For(watch).
-			Complete(reconciler)).To(Succeed())
-
-		go func() {
-			defer GinkgoRecover()
-			Expect(mgr.Start(ctx)).To(Succeed())
-		}()
-
-		// --- Consumer workspace: bind the export. ---
-		_, consumerPath = envtest.NewWorkspaceFixture(GinkgoT(), cli, core.RootCluster.Path(),
-			envtest.WithNamePrefix("krop-consumer"))
-		applyFixture(ctx, cli, consumerPath,
-			"../../test/fixtures/apibinding-kubernetescluster.yaml",
-			map[string]string{"PROVIDER_PATH": providerPath.String()})
-
-		// Wait for the binding to reach Bound.
-		envtest.Eventually(GinkgoT(), func() (bool, string) {
-			b := &apisv1alpha2.APIBinding{}
-			if err := cli.Cluster(consumerPath).Get(ctx, client.ObjectKey{Name: "kubernetesclusters"}, b); err != nil {
-				return false, fmt.Sprintf("get binding: %v", err)
-			}
-			return b.Status.Phase == apisv1alpha2.APIBindingPhaseBound, fmt.Sprintf("phase: %s", b.Status.Phase)
-		}, wait.ForeverTestTimeout, 200*time.Millisecond, "APIBinding not bound")
-
-		// Wait until the bound instance kind is List-able in the consumer ws.
-		envtest.Eventually(GinkgoT(), func() (bool, string) {
-			list := &unstructured.UnstructuredList{}
-			list.SetGroupVersionKind(schema.GroupVersionKind{
-				Group: instanceGVK.Group, Version: instanceGVK.Version, Kind: instanceGVK.Kind + "List",
-			})
-			if err := cli.Cluster(consumerPath).List(ctx, list); err != nil {
-				return false, err.Error()
-			}
-			return true, ""
-		}, wait.ForeverTestTimeout, 200*time.Millisecond, "bound KubernetesCluster kind not served yet")
-	})
-
-	AfterAll(func() {
-		if cancel != nil {
-			cancel()
-		}
+		compiled, err = graphSource.Build(rgd)
+		Expect(err).NotTo(HaveOccurred(), "graph.NewBuilder against live kcp discovery (§16.3)")
 	})
 
 	It("materializes the consumer-target ConfigMap and projects status", func() {
@@ -254,30 +199,59 @@ var _ = Describe("M1 instance reconcile", Ordered, func() {
 			"metadata":   map[string]interface{}{"name": "demo", "namespace": "default"},
 			"spec":       map[string]interface{}{"region": "eu"},
 		}}
-		Expect(cli.Cluster(consumerPath).Create(ctx, instance)).To(Succeed())
+		Expect(wc.Create(ctx, instance)).To(Succeed())
 
-		// The reconciler should create eu-cluster-config in the consumer ws.
-		envtest.Eventually(GinkgoT(), func() (bool, string) {
-			cm := &unstructured.Unstructured{}
-			cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
-			if err := cli.Cluster(consumerPath).Get(ctx,
-				client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm); err != nil {
-				return false, err.Error()
-			}
-			region, _, _ := unstructured.NestedString(cm.Object, "data", "region")
-			return region == "eu", "configmap data.region=" + region
-		}, wait.ForeverTestTimeout, 200*time.Millisecond, "consumer-target ConfigMap not materialized")
+		// Drive the exact reconcile logic from cmd/controller/main.go's closure
+		// once, directly, against the workspace-scoped client (which stands in for
+		// the per-cluster client the multicluster manager would hand the closure).
+		reconcileOnce(ctx, wc, compiled)
 
-		// And project status.configMapName back onto the instance.
-		envtest.Eventually(GinkgoT(), func() (bool, string) {
-			got := &unstructured.Unstructured{}
-			got.SetGroupVersionKind(instanceGVK)
-			if err := cli.Cluster(consumerPath).Get(ctx,
-				client.ObjectKey{Namespace: "default", Name: "demo"}, got); err != nil {
-				return false, err.Error()
-			}
-			name, _, _ := unstructured.NestedString(got.Object, "status", "configMapName")
-			return name == "eu-cluster-config", "status.configMapName=" + name
-		}, wait.ForeverTestTimeout, 200*time.Millisecond, "instance status not projected")
+		// The reconcile must have materialized eu-cluster-config (data.region=eu)
+		// in the workspace.
+		cm := &unstructured.Unstructured{}
+		cm.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
+		Expect(wc.Get(ctx,
+			client.ObjectKey{Namespace: "default", Name: "eu-cluster-config"}, cm)).To(Succeed())
+		region, _, _ := unstructured.NestedString(cm.Object, "data", "region")
+		Expect(region).To(Equal("eu"), "consumer-target ConfigMap data.region")
+
+		// And projected status.configMapName back onto the instance.
+		got := &unstructured.Unstructured{}
+		got.SetGroupVersionKind(instanceGVK)
+		Expect(wc.Get(ctx,
+			client.ObjectKey{Namespace: "default", Name: "demo"}, got)).To(Succeed())
+		name, _, _ := unstructured.NestedString(got.Object, "status", "configMapName")
+		Expect(name).To(Equal("eu-cluster-config"), "projected status.configMapName")
 	})
 })
+
+// reconcileOnce runs a single pass of the M1 reconcile logic — identical to the
+// closure in cmd/controller/main.go, minus the per-cluster client lookup (the
+// caller supplies the workspace-scoped client directly). Keeping it in lockstep
+// with main.go is what lets this suite retire §16.3 for the real engine path.
+func reconcileOnce(ctx context.Context, consumer client.Client, compiled *krograph.Graph) {
+	GinkgoHelper()
+
+	inst := &unstructured.Unstructured{}
+	inst.SetGroupVersionKind(instanceGVK)
+	Expect(consumer.Get(ctx, client.ObjectKey{Namespace: "default", Name: "demo"}, inst)).To(Succeed())
+
+	rt, err := kroruntime.FromGraph(compiled, inst, krograph.RGDConfig{
+		MaxCollectionSize:          1000,
+		MaxCollectionDimensionSize: 1000,
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	_, err = kropengine.New().Reconcile(ctx, rt, map[kropengine.Target]kropengine.Applier{
+		kropengine.TargetConsumer: kropengine.NewSSAApplier(consumer),
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	di, err := kropengine.ProjectStatus(rt)
+	Expect(err).NotTo(HaveOccurred())
+	status, found, err := unstructured.NestedMap(di.Object, "status")
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue(), "blueprint status not resolved")
+	Expect(unstructured.SetNestedMap(inst.Object, status, "status")).To(Succeed())
+	Expect(consumer.Status().Update(ctx, inst)).To(Succeed())
+}
