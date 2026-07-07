@@ -103,6 +103,15 @@ wiring, `APIExportEndpointSlice` discovery (`internal/kcp/endpointslice.go`), pe
 client access (`mgr.GetCluster(ctx, req.ClusterName).GetClient()`), the `apigen` CRD→APIResourceSchema
 flow (for **our own** engine CRD only), and the `envtest`-based kcp e2e harness shape.
 
+The **e2e harness** models on a second sibling reference, `dependency-controller`
+(`opendefensecloud/dependency-controller`, `internal/controller/`): it boots kcp in-process via
+`github.com/kcp-dev/multicluster-provider/envtest` (binary auto-downloaded by `make test`), applies
+ARS/APIExport/APIBinding fixtures with `envtest.NewWorkspaceFixture` + `${VAR}`-substituted YAML,
+runs the manager in a goroutine against the APIExport virtual workspace, and asserts cross-workspace
+with `envtest.Eventually`. Its `test/e2e/` kind+kcp-operator+helm full-stack tier is deferred to M6.
+Note the API-version split it confirms: `APIExport`/`APIBinding` are `apis.kcp.io/v1alpha2`;
+`APIResourceSchema`/`APIExportEndpointSlice` are `v1alpha1`.
+
 **Reused as a library** (kro v0.9.2, no `internal/` packages): `api/v1alpha1`, `pkg/simpleschema`,
 `pkg/graph/crd` (`SynthesizeCRD`), `pkg/graph` (`Builder`), `pkg/cel`, `pkg/runtime`
 (`FromGraph`, `Node.GetDesired/SetObserved/CheckReadiness/IsIgnored`). **Dropped:**
