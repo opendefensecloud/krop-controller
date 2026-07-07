@@ -131,12 +131,47 @@ func main() {
 }
 
 func run() error {
-	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
-	rootCtx := signals.SetupSignalHandler()
-	entryLog := log.Log.WithName("entrypoint")
-	entryLog.Info("starting krop-controller", "version", version)
+	// Operability flags for the deployed controller (wired through the Helm
+	// chart). Register them on the default flag set BEFORE flag.Parse().
+	var (
+		healthProbeAddr = flag.String("health-probe-bind-address", ":8081",
+			"The address the health probe (healthz/readyz) endpoint binds to.")
+		// Only the single PROVIDER manager serves metrics. The per-blueprint
+		// instance managers keep metrics disabled (BindAddress "0") to avoid a
+		// port collision — see the instance manager construction below.
+		metricsAddr = flag.String("metrics-bind-address", ":8080",
+			"The address the provider manager's metrics endpoint binds to. Set to '0' to disable.")
+		// Leader election lets HA (replicaCount>1) run a single active manager.
+		// It creates a coordination.k8s.io Lease in the provider workspace, in
+		// the configured leader-election-namespace. Leaving it off (the default)
+		// needs no Lease RBAC.
+		leaderElect = flag.Bool("leader-elect", false,
+			"Enable leader election, ensuring only one active controller manager. Required for HA (replicaCount>1).")
+		// controller-runtime needs an explicit namespace for the Lease when the
+		// client is scoped to a kcp workspace (no in-cluster namespace to infer).
+		// Default to the pod namespace via POD_NAMESPACE, falling back to "default".
+		leaderElectNamespace = flag.String("leader-election-namespace", podNamespace(),
+			"The namespace in which the leader-election Lease is created (in the provider workspace).")
+	)
+
+	// zap logging flags (--zap-log-level, --zap-devel, --zap-encoder, ...). The
+	// zap.Options zero value defaults to production JSON encoding, which is the
+	// right default for a deployed controller; --zap-devel opts into dev mode.
+	var zapOpts zap.Options
+	zapOpts.BindFlags(flag.CommandLine)
 
 	flag.Parse()
+
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
+	rootCtx := signals.SetupSignalHandler()
+	entryLog := log.Log.WithName("entrypoint")
+	entryLog.Info("starting krop-controller",
+		"version", version,
+		"healthProbeBindAddress", *healthProbeAddr,
+		"metricsBindAddress", *metricsAddr,
+		"leaderElect", *leaderElect,
+		"leaderElectionNamespace", *leaderElectNamespace,
+	)
 
 	cfg := ctrl.GetConfigOrDie()
 	if err := kropkcp.ValidateKubeconfig(cfg.Host); err != nil {
@@ -159,9 +194,18 @@ func run() error {
 		}
 	}
 
+	// Only the provider manager serves metrics (Metrics.BindAddress); the
+	// per-blueprint instance managers keep metrics disabled to avoid a port
+	// collision (see the instance manager construction in startFn). Leader
+	// election, when enabled, creates a Lease in the provider workspace in
+	// leaderElectionNamespace — required for HA (replicaCount>1).
 	mgr, err := ctrl.NewManager(cfg, manager.Options{
-		Scheme:                 providerScheme,
-		HealthProbeBindAddress: ":8081",
+		Scheme:                  providerScheme,
+		HealthProbeBindAddress:  *healthProbeAddr,
+		Metrics:                 metricsserver.Options{BindAddress: *metricsAddr},
+		LeaderElection:          *leaderElect,
+		LeaderElectionID:        "krop-controller-leader",
+		LeaderElectionNamespace: *leaderElectNamespace,
 	})
 	if err != nil {
 		return fmt.Errorf("setting up provider manager: %w", err)
@@ -351,6 +395,19 @@ func run() error {
 	}
 
 	return nil
+}
+
+// podNamespace returns the namespace the controller pod runs in, read from the
+// downward-API-injectable POD_NAMESPACE env var, falling back to "default". It
+// is the default namespace for the leader-election Lease (created in the
+// provider workspace), where controller-runtime needs an explicit namespace
+// because the workspace-scoped client has none to infer.
+func podNamespace() string {
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return ns
+	}
+
+	return "default"
 }
 
 // newInstance returns a fresh unstructured object typed to the instance GVK.

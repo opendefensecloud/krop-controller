@@ -16,8 +16,8 @@ fullnameOverride: ""
 # -- Override the chart name
 nameOverride: ""
 
-# -- Number of replicas. The controller does not currently run leader election
-# (see controller.leaderElect), so keep this at 1 for a single active manager.
+# -- Number of replicas. Set >1 only together with controller.leaderElect=true
+# so exactly one manager is active at a time; otherwise keep this at 1.
 replicaCount: 1
 
 # -- ServiceAccount for the controller pod.
@@ -40,21 +40,20 @@ serviceAccount:
 
 # -- Controller runtime configuration.
 #
-# NOTE: the current krop-controller binary does NOT register CLI flags for the
-# health-probe / metrics bind addresses or leader election — the manager
-# hardcodes the health probe endpoint at :8081 and does not run leader election.
-# The keys below are therefore configuration placeholders: healthProbeBindAddress
-# is used to derive the container/probe port, while metricsBindAddress and
-# leaderElect are reserved for when the binary grows the corresponding flags.
-# Passing them as args today would crash the container, so only `extraArgs` is
-# rendered into the container's args. Use `extraArgs` as the escape hatch for any
-# flags the binary actually accepts.
+# These keys are rendered into the container's args as the binary's operability
+# flags: --health-probe-bind-address, --metrics-bind-address and (when enabled)
+# --leader-elect. healthProbeBindAddress ALSO derives the container/probe port.
+# Metrics are served ONLY by the single provider manager on metricsBindAddress
+# (the per-blueprint instance managers keep metrics disabled to avoid a port
+# collision). Use `extraArgs` for any additional flags (e.g. --zap-log-level,
+# --zap-devel, --leader-election-namespace).
 controller:
-  # -- Health probe bind address. Used to derive the probe/container port.
+  # -- Health probe bind address (healthz/readyz). Also derives the probe/container port.
   healthProbeBindAddress: ":8081"
-  # -- Metrics bind address (reserved; not yet wired as a CLI flag).
+  # -- Provider manager metrics bind address. Set to "0" to disable metrics.
   metricsBindAddress: ":8080"
-  # -- Enable leader election (reserved; not yet wired as a CLI flag).
+  # -- Enable leader election (renders --leader-elect). Required for HA (replicaCount>1);
+  # creates a coordination.k8s.io Lease in the provider workspace.
   leaderElect: false
   # -- Additional CLI args passed verbatim to the manager container.
   extraArgs: []

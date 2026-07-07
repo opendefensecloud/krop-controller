@@ -27,15 +27,26 @@ spec:
         - name: manager
           image: {{ include "krop-controller.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          {{- with .Values.controller.extraArgs }}
           args:
+            - --health-probe-bind-address={{ .Values.controller.healthProbeBindAddress }}
+            - --metrics-bind-address={{ .Values.controller.metricsBindAddress }}
+            {{- if .Values.controller.leaderElect }}
+            - --leader-elect
+            {{- end }}
+            {{- with .Values.controller.extraArgs }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- if .Values.kcp.kubeconfigSecret.name }}
+            {{- end }}
           env:
+            # Default namespace for the leader-election Lease (consumed by the
+            # binary's --leader-election-namespace default via POD_NAMESPACE).
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if .Values.kcp.kubeconfigSecret.name }}
             - name: KUBECONFIG
               value: /etc/kcp/{{ .Values.kcp.kubeconfigSecret.key }}
-          {{- end }}
+            {{- end }}
           ports:
             - name: health
               containerPort: {{ include "krop-controller.healthPort" . }}
