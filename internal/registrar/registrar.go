@@ -175,7 +175,13 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 	if err != nil {
 		return r.fail(ctx, bp, "PublishFailed", err)
 	}
-	claims := DeriveClaims(ForeignConsumerGRs(g, instanceGR, routing), identity)
+	// Consumer-target template nodes get full CRUD claims (the engine writes them);
+	// consumer-target external refs get read-only claims (the engine only reads them).
+	writableGRs, externalGRs := ForeignConsumerGRs(g, instanceGR, routing)
+	claims := append(
+		DeriveClaims(writableGRs, claimVerbs, identity),
+		DeriveClaims(externalGRs, readOnlyVerbs, identity)...,
+	)
 	// A foreign (non-core) claim with no identityHash would not authorize: the
 	// owning APIExport isn't bound in the provider workspace yet. Fail the publish
 	// rather than emit a silently-broken claim — the resync retries once the

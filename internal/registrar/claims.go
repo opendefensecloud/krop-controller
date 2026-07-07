@@ -25,13 +25,17 @@ import (
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 )
 
-// claimVerbs is the CRUD verb set the engine needs on claimed consumer-target types.
+// claimVerbs is the CRUD verb set the engine needs on writable consumer-target types.
 var claimVerbs = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
 
+// readOnlyVerbs is the verb set claimed for consumer-target external refs: the engine
+// only Get/List/watches them (they are never created, updated, or deleted).
+var readOnlyVerbs = []string{"get", "list", "watch"}
+
 // DeriveClaims builds one permissionClaim per foreign consumer-target GroupResource,
-// resolving identityHash from the provided map (empty string for core types).
-// Deterministic order (sorted) so publications are stable.
-func DeriveClaims(foreign []schema.GroupResource, identity map[schema.GroupResource]string) []apisv1alpha2.PermissionClaim {
+// each carrying verbs and resolving identityHash from the provided map (empty string
+// for core types). Deterministic order (sorted) so publications are stable.
+func DeriveClaims(foreign []schema.GroupResource, verbs []string, identity map[schema.GroupResource]string) []apisv1alpha2.PermissionClaim {
 	sorted := append([]schema.GroupResource(nil), foreign...)
 	sort.Slice(sorted, func(i, j int) bool {
 		if sorted[i].Group != sorted[j].Group {
@@ -44,7 +48,7 @@ func DeriveClaims(foreign []schema.GroupResource, identity map[schema.GroupResou
 	for _, gr := range sorted {
 		claims = append(claims, apisv1alpha2.PermissionClaim{
 			GroupResource: apisv1alpha2.GroupResource{Group: gr.Group, Resource: gr.Resource},
-			Verbs:         claimVerbs,
+			Verbs:         verbs,
 			IdentityHash:  identity[gr],
 		})
 	}
@@ -71,27 +75,40 @@ func validateClaims(claims []apisv1alpha2.PermissionClaim) error {
 }
 
 // ForeignConsumerGRs enumerates the GroupResources of consumer-target nodes that
-// are NOT the instance's own type (those need permissionClaims to be written into
-// the consumer workspace through the vw). Resolves each node's routing target from
-// the build-time routing map exactly as the engine does. External-ref nodes are
-// skipped for now — their read-only verb split lands in a later task.
-func ForeignConsumerGRs(g *graph.Graph, instanceGR schema.GroupResource, routing map[string]kropengine.Target) []schema.GroupResource {
-	seen := map[schema.GroupResource]bool{}
-	var out []schema.GroupResource
+// are NOT the instance's own type (those need permissionClaims to reach the consumer
+// workspace through the vw). Resolves each node's routing target from the build-time
+// routing map exactly as the engine does. Returns two disjoint sets:
+//   - writable: template nodes (Resource/Collection) the engine creates and mutates,
+//     claimed with full CRUD verbs.
+//   - external: external-ref nodes (External/ExternalCollection) the engine only reads,
+//     claimed read-only.
+//
+// Both exclude the instance's own GR and are deterministically ordered by DeriveClaims.
+func ForeignConsumerGRs(g *graph.Graph, instanceGR schema.GroupResource, routing map[string]kropengine.Target) (writable, external []schema.GroupResource) {
+	seenWritable := map[schema.GroupResource]bool{}
+	seenExternal := map[schema.GroupResource]bool{}
 	for _, node := range g.Nodes {
-		if node.Meta.Type == graph.NodeTypeExternal || node.Meta.Type == graph.NodeTypeExternalCollection {
-			continue
-		}
 		if kropengine.TargetForNode(node.Meta.ID, routing) != kropengine.TargetConsumer {
 			continue
 		}
 		gr := node.Meta.GVR.GroupResource()
-		if gr == instanceGR || seen[gr] {
+		if gr == instanceGR {
 			continue
 		}
-		seen[gr] = true
-		out = append(out, gr)
+		isExternal := node.Meta.Type == graph.NodeTypeExternal || node.Meta.Type == graph.NodeTypeExternalCollection
+		if isExternal {
+			if !seenExternal[gr] {
+				seenExternal[gr] = true
+				external = append(external, gr)
+			}
+
+			continue
+		}
+		if !seenWritable[gr] {
+			seenWritable[gr] = true
+			writable = append(writable, gr)
+		}
 	}
 
-	return out
+	return writable, external
 }
