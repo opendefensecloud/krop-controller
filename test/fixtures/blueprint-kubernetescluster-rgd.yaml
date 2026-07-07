@@ -1,0 +1,44 @@
+# test/fixtures/blueprint-kubernetescluster-rgd.yaml
+# A provider-authored blueprint: the M3 cross-target KubernetesCluster body
+# (provider AgentRequest + consumer ConfigMap reading ${agentRequest.status.token})
+# wrapped as our own ResourceGraphDefinition CRD under krop.opendefense.cloud/v1alpha1.
+# The Registrar auto-publishes it as an APIExport + APIResourceSchema + claims.
+apiVersion: krop.opendefense.cloud/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: kubernetescluster
+  namespace: default
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: KubernetesCluster
+    group: krop.opendefense.cloud
+    spec:
+      region: string
+    status:
+      configMapName: ${config.metadata.name}
+      agentToken: ${agentRequest.status.token}
+  resources:
+    - id: agentRequest
+      template:
+        apiVersion: fulfil.krop.opendefense.cloud/v1alpha1
+        kind: AgentRequest
+        metadata:
+          name: ${schema.spec.region}-agent
+          namespace: default
+          annotations:
+            krop.opendefense.cloud/target: provider
+        spec:
+          region: ${schema.spec.region}
+    - id: config
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${schema.spec.region}-cluster-config
+          namespace: default
+          annotations:
+            krop.opendefense.cloud/target: consumer
+        data:
+          region: ${schema.spec.region}
+          token: ${agentRequest.status.token}
