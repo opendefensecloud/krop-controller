@@ -93,6 +93,8 @@ func TestSweeper_DeletesOrphanedChildrenAndRecord(t *testing.T) {
 		ProviderClient: cl,
 		StaleAfter:     5 * time.Minute,
 		Clock:          func() time.Time { return now },
+		// Started well before the grace window so sweeping is active.
+		startedAt: now.Add(-1 * time.Hour),
 	}
 	if err := s.Sweep(context.Background()); err != nil {
 		t.Fatalf("Sweep: %v", err)
@@ -130,6 +132,8 @@ func TestSweeper_SkipsFreshAndUnparseable(t *testing.T) {
 		ProviderClient: cl,
 		StaleAfter:     5 * time.Minute,
 		Clock:          func() time.Time { return now },
+		// Started well before the grace window so sweeping is active.
+		startedAt: now.Add(-1 * time.Hour),
 	}
 	if err := s.Sweep(context.Background()); err != nil {
 		t.Fatalf("Sweep: %v", err)
@@ -143,5 +147,57 @@ func TestSweeper_SkipsFreshAndUnparseable(t *testing.T) {
 	}
 	if !exists(t, cl, configMapGVK, "krop-live-empty") {
 		t.Error("record with empty timestamp was wrongly deleted")
+	}
+}
+
+// TestSweeper_StartupGracePeriod asserts a STALE record is NOT swept while the
+// process is within its StaleAfter startup grace window (guarding against a
+// fleet-wide false-positive right after a controller restart), and IS swept once
+// the clock advances past startedAt+StaleAfter.
+func TestSweeper_StartupGracePeriod(t *testing.T) {
+	start := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+
+	// Stale from the outset: lastReconciled 10 min before start.
+	staleRec := mkRecord("krop-live-stale", "uid-1",
+		start.Add(-10*time.Minute).Format(time.RFC3339))
+	staleChild := mkAgentRequest("child-1", "uid-1")
+
+	cl := fake.NewClientBuilder().
+		WithObjects(staleRec, staleChild).
+		Build()
+
+	// A mutable clock: begins at start, advanced below.
+	nowFn := start
+	s := &Sweeper{
+		ProviderClient: cl,
+		StaleAfter:     5 * time.Minute,
+		Clock:          func() time.Time { return nowFn },
+		startedAt:      start,
+	}
+
+	// Within the grace window (now == startedAt < startedAt+StaleAfter): even a
+	// stale record must survive, since a just-restarted controller has not yet had
+	// a full StaleAfter to refresh live instances' records.
+	if err := s.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep (grace): %v", err)
+	}
+	if !exists(t, cl, configMapGVK, "krop-live-stale") {
+		t.Error("stale record swept during startup grace window")
+	}
+	if !exists(t, cl, agentRequestGVK, "child-1") {
+		t.Error("child swept during startup grace window")
+	}
+
+	// Advance past startedAt+StaleAfter: the grace window has closed and the record
+	// is (still) stale, so it must now be swept.
+	nowFn = start.Add(6 * time.Minute)
+	if err := s.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep (after grace): %v", err)
+	}
+	if exists(t, cl, configMapGVK, "krop-live-stale") {
+		t.Error("stale record not swept after grace window closed")
+	}
+	if exists(t, cl, agentRequestGVK, "child-1") {
+		t.Error("stale orphaned child not swept after grace window closed")
 	}
 }
