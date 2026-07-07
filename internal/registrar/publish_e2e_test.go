@@ -133,9 +133,9 @@ var _ = Describe("M4a Registrar publication", Ordered, func() {
 			Cache:     registrar.NewGraphCache(),
 			Source:    graphSource,
 		}
-		// The blueprint CRD is namespaced; the fixture lives in "default".
+		// The blueprint CRD is cluster-scoped (workspace-level); no namespace.
 		_, err = reg.Reconcile(ctx, reconcile.Request{
-			NamespacedName: types.NamespacedName{Namespace: "default", Name: "kubernetescluster"},
+			NamespacedName: types.NamespacedName{Name: "kubernetescluster"},
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -178,7 +178,7 @@ var _ = Describe("M4a Registrar publication", Ordered, func() {
 
 		// 5. The blueprint status reflects the publication.
 		bp := &kropv1alpha1.ResourceGraphDefinition{}
-		Expect(wsClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "kubernetescluster"}, bp)).To(Succeed())
+		Expect(wsClient.Get(ctx, client.ObjectKey{Name: "kubernetescluster"}, bp)).To(Succeed())
 		Expect(bp.Status.ExportedAPI).To(Equal(expectedExportName))
 		Expect(bp.Status.ObservedSpecHash).NotTo(BeEmpty())
 
