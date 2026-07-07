@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // fakeApplier records applied objects and echoes them back as "observed",
@@ -32,5 +33,25 @@ func TestFakeApplier_SatisfiesInterface(t *testing.T) {
 	obs, err := (&fakeApplier{}).Apply(context.Background(), obj(nil))
 	if err != nil || obs == nil {
 		t.Fatalf("apply returned %v,%v", obs, err)
+	}
+}
+
+func TestSSAApplier_AppliesAndReadsBack(t *testing.T) {
+	cl := fake.NewClientBuilder().Build()
+	a := NewSSAApplier(cl)
+
+	cm := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]interface{}{"name": "cfg", "namespace": "default"},
+		"data":     map[string]interface{}{"region": "eu"},
+	}}
+
+	observed, err := a.Apply(context.Background(), cm)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	region, _, _ := unstructured.NestedString(observed.Object, "data", "region")
+	if region != "eu" {
+		t.Fatalf("read-back data.region = %q, want eu", region)
 	}
 }

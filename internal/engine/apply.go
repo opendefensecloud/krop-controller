@@ -19,6 +19,7 @@ import (
 	"context"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // FieldManager is the server-side-apply field owner for all engine writes.
@@ -30,4 +31,31 @@ const FieldManager = "krop-controller"
 // client-agnostic and unit-testable.
 type Applier interface {
 	Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+}
+
+// SSAApplier applies objects into one workspace via server-side apply using a
+// controller-runtime client, then reads the object back so callers observe the
+// full server state (including fields other controllers set).
+type SSAApplier struct {
+	c client.Client
+}
+
+// NewSSAApplier builds an SSAApplier bound to one workspace-scoped client.
+func NewSSAApplier(c client.Client) *SSAApplier {
+	return &SSAApplier{c: c}
+}
+
+// Apply server-side-applies obj (force ownership) and returns it as read back.
+func (a *SSAApplier) Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	desired := obj.DeepCopy()
+	if err := a.c.Patch(ctx, desired, client.Apply,
+		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+		return nil, err
+	}
+	observed := &unstructured.Unstructured{}
+	observed.SetGroupVersionKind(obj.GroupVersionKind())
+	if err := a.c.Get(ctx, client.ObjectKeyFromObject(desired), observed); err != nil {
+		return nil, err
+	}
+	return observed, nil
 }
