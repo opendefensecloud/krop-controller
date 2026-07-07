@@ -17,6 +17,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/kubernetes-sigs/kro/pkg/runtime"
@@ -63,14 +64,27 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 
 		desired, err := node.GetDesired()
 		if err != nil {
-			// A dependency is not yet observed/ready → don't apply partial;
-			// converge on a later requeue. This is expected convergence flow,
-			// not a reconcile error, so we deliberately drop err and requeue.
-			res.Ready = false
-			res.Requeue = true
+			// kro distinguishes a pending dependency (CEL couldn't resolve because
+			// a referenced status/field isn't observed yet, wrapped with the
+			// exported runtime.ErrDataPending sentinel) from a genuine expression
+			// bug (type error, bad overload, division by zero). Only the former is
+			// normal convergence flow; the latter must surface as a hard error so a
+			// broken blueprint doesn't hot-loop every requeue with nothing reported.
+			if errors.Is(err, runtime.ErrDataPending) {
+				// A dependency is not yet observed/ready → don't apply partial;
+				// converge on a later requeue. Complete stays false so the caller
+				// does not prune the still-desired children this pass skipped.
+				res.Ready = false
+				res.Requeue = true
 
-			//nolint:nilerr // unresolved dependency is normal convergence: signal NotReady+Requeue, not a hard error.
-			return res, nil
+				//nolint:nilerr // unresolved dependency is normal convergence: signal NotReady+Requeue, not a hard error.
+				return res, nil
+			}
+
+			// Genuine CEL/type error: return it so the failure is surfaced (logged,
+			// counted) instead of silently requeueing forever. A hard error returns
+			// before res.Complete is set — intentional; nothing should prune.
+			return res, fmt.Errorf("node %s: %w", node.Spec.Meta.ID, err)
 		}
 
 		observed := make([]*unstructured.Unstructured, 0, len(desired))

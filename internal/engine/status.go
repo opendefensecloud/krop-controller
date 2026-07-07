@@ -16,6 +16,8 @@
 package engine
 
 import (
+	"fmt"
+
 	"github.com/kubernetes-sigs/kro/pkg/runtime"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -27,6 +29,11 @@ func ProjectStatus(rt *runtime.Runtime) (*unstructured.Unstructured, error) {
 	desired, err := rt.Instance().GetDesired()
 	if err != nil {
 		return nil, err
+	}
+	// GetDesired returns one object per instance; guard against an empty slice so
+	// a misbehaving runtime yields an error rather than an index-out-of-range panic.
+	if len(desired) == 0 {
+		return nil, fmt.Errorf("instance produced no desired object")
 	}
 
 	return desired[0], nil
