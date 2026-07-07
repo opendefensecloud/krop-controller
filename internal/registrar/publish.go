@@ -82,6 +82,37 @@ func identityByGroupResource(ctx context.Context, c client.Client) (map[schema.G
 	return out, nil
 }
 
+// DeletePublishedAPI cascade-deletes a published APIExport and the
+// APIResourceSchema(s) it references from the provider workspace. It is called on
+// blueprint withdrawal: the blueprint is the offering, so removing it removes the
+// API. The APIExport is fetched first to discover its referenced schema names; a
+// missing APIExport (already gone) is treated as success. Each delete ignores
+// NotFound so a partially-torn-down state converges.
+func DeletePublishedAPI(ctx context.Context, c client.Client, exportName string) error {
+	export := &apisv1alpha2.APIExport{}
+	if err := c.Get(ctx, types.NamespacedName{Name: exportName}, export); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("getting APIExport %q for deletion: %w", exportName, err)
+	}
+	// Delete the referenced ARS(es) before the APIExport so a mid-teardown resync
+	// cannot observe an APIExport referencing an already-deleted schema.
+	for _, res := range export.Spec.Resources {
+		ars := &apisv1alpha1.APIResourceSchema{}
+		ars.SetName(res.Schema)
+		if err := client.IgnoreNotFound(c.Delete(ctx, ars)); err != nil {
+			return fmt.Errorf("deleting APIResourceSchema %q: %w", res.Schema, err)
+		}
+	}
+	if err := client.IgnoreNotFound(c.Delete(ctx, export)); err != nil {
+		return fmt.Errorf("deleting APIExport %q: %w", exportName, err)
+	}
+
+	return nil
+}
+
 // UpsertAPIExport server-side-applies the APIExport referencing the ARS with the
 // derived permissionClaims. exportName is the ARS's <plural>.<group>.
 //
