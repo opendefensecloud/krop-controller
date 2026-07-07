@@ -170,9 +170,9 @@ func kcpServer(ws string) string {
 }
 
 // kcpctl runs kubectl against kcp at a given workspace (relative to root).
-func kcpctl(ws string, args ...string) string {
+func kcpctl(ws string, args ...string) {
 	GinkgoHelper()
-	return run(kubectlBin, append([]string{
+	run(kubectlBin, append([]string{
 		"--kubeconfig", kcpHostKubeconfig,
 		"--server", kcpServer(ws),
 	}, args...)...)
@@ -304,7 +304,7 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 func createKindCluster() {
 	// Reuse if it already exists.
 	out, _ := runNoFail(kindBin, "get", "clusters")
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.TrimSpace(line) == kindClusterName {
 			run(kindBin, "export", "kubeconfig", "--name", kindClusterName)
 			return
