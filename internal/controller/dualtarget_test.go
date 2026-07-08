@@ -97,8 +97,8 @@ var _ = Describe("M3 async cross-target reconcile", Ordered, func() {
 
 		// Provider workspace: ARS + APIExport (with the configmaps claim).
 		_, providerPath = envtest.NewWorkspaceFixture(GinkgoT(), cli, core.RootCluster.Path(), envtest.WithNamePrefix("krop-provider"))
-		applyFixtureFromFile(ctx, cli, providerPath, "../../config/kcp/apiresourceschema-kubernetesclusters.krop.opendefense.cloud.yaml", nil)
-		applyFixtureFromFile(ctx, cli, providerPath, "../../config/kcp/apiexport-krop-m1.yaml", nil)
+		applyFixtureFromFile(ctx, cli, providerPath, "../../test/fixtures/apiresourceschema-kubernetesclusters.krop.opendefense.cloud.yaml", nil)
+		applyFixtureFromFile(ctx, cli, providerPath, "../../test/fixtures/apiexport-krop-m1.yaml", nil)
 
 		// Consumer workspace + APIBinding (accepting the claim) — BEFORE awaiting
 		// endpoints. kcp only advertises the vw URL once a binding exists.

@@ -1,0 +1,12 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: krop.opendefense.cloud
+spec:
+  resources:
+  - group: krop.opendefense.cloud
+    name: resourcegraphdefinitions
+    schema: v260708-b80061e.resourcegraphdefinitions.krop.opendefense.cloud
+    storage:
+      crd: {}
+status: {}
