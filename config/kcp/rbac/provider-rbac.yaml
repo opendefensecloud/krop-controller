@@ -93,8 +93,8 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # --- PROVIDER-TARGET children (DEPLOYMENT-SPECIFIC) ----------------------
-  # The engine writes provider-target children (annotation
-  # krop.opendefense.cloud/target: provider) into THIS workspace with the
+  # The engine writes provider-target children (resource-level field
+  # `target: provider`) into THIS workspace with the
   # controller's own identity — same ownership domain, no permissionClaim
   # (design §9). These GVKs are defined by the operator's blueprints and are
   # therefore NOT knowable at chart-install time.

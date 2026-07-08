@@ -19,25 +19,23 @@ spec:
       agentToken: ${agentRequest.status.token}
   resources:
     - id: agentRequest
+      target: provider
       template:
         apiVersion: fulfil.krop.opendefense.cloud/v1alpha1
         kind: AgentRequest
         metadata:
           name: ${schema.spec.region}-agent
           namespace: default
-          annotations:
-            krop.opendefense.cloud/target: provider
         spec:
           region: ${schema.spec.region}
     - id: config
+      target: consumer
       template:
         apiVersion: v1
         kind: ConfigMap
         metadata:
           name: ${schema.spec.region}-cluster-config
           namespace: default
-          annotations:
-            krop.opendefense.cloud/target: consumer
         data:
           region: ${schema.spec.region}
           token: ${agentRequest.status.token}

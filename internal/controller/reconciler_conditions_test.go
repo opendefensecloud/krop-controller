@@ -49,18 +49,16 @@ func conditionsRGD() *krov1alpha1.ResourceGraphDefinition {
 		generator.WithResource("config", map[string]any{
 			"apiVersion": "v1", "kind": "ConfigMap",
 			"metadata": map[string]any{
-				"name":        "${schema.spec.region}-cluster-config",
-				"namespace":   "default",
-				"annotations": map[string]any{kropengine.TargetAnnotation: string(kropengine.TargetConsumer)},
+				"name":      "${schema.spec.region}-cluster-config",
+				"namespace": "default",
 			},
 			"data": map[string]any{"region": "${schema.spec.region}"},
 		}, nil, nil),
 		generator.WithResource("providerRecord", map[string]any{
 			"apiVersion": "v1", "kind": "ConfigMap",
 			"metadata": map[string]any{
-				"name":        "${schema.spec.region}-provider-record",
-				"namespace":   "default",
-				"annotations": map[string]any{kropengine.TargetAnnotation: string(kropengine.TargetProvider)},
+				"name":      "${schema.spec.region}-provider-record",
+				"namespace": "default",
 			},
 			"data": map[string]any{"region": "${schema.spec.region}"},
 		}, nil, nil),
@@ -113,6 +111,7 @@ func TestReconcile_SetsReadyCondition(t *testing.T) {
 		ProviderClient: provider,
 		InstanceGVK:    testGVK,
 		BlueprintName:  "bp",
+		Routing:        map[string]kropengine.Target{"config": kropengine.TargetConsumer, "providerRecord": kropengine.TargetProvider},
 	}
 
 	res, err := r.Reconcile(context.Background(), consumer, "cluster1",

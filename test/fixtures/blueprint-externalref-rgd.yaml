@@ -1,0 +1,36 @@
+# test/fixtures/blueprint-externalref-rgd.yaml
+# External-ref e2e blueprint: read an existing Vpc (externalRef, routed to the
+# consumer plane) and funnel ${vpc.status.vpcId} into a consumer ConfigMap child
+# and the instance status. The Vpc is never created, labeled, or GC'd by krop.
+apiVersion: krop.opendefense.cloud/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: externalapp
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: ExternalApp
+    group: krop.opendefense.cloud
+    spec:
+      vpcName: string
+    status:
+      vpcId: ${vpc.status.vpcId}
+  resources:
+    - id: vpc
+      target: consumer
+      externalRef:
+        apiVersion: example.krop.opendefense.cloud/v1alpha1
+        kind: Vpc
+        metadata:
+          name: ${schema.spec.vpcName}
+          namespace: default
+    - id: config
+      target: consumer
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${schema.spec.vpcName}-config
+          namespace: default
+        data:
+          vpcId: ${vpc.status.vpcId}

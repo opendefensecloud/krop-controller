@@ -20,8 +20,13 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/kubernetes-sigs/kro/pkg/graph"
 	"github.com/kubernetes-sigs/kro/pkg/runtime"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 )
 
 // Engine drives kro's runtime for a single instance: it resolves, routes,
@@ -45,12 +50,14 @@ type Result struct {
 	Complete bool
 }
 
-// Reconcile drives the runtime node-by-node in topological order. For each
-// included node it resolves the desired object(s), routes each by its target
-// annotation (stripping it), applies via the matching Applier, reads back, and
-// feeds the observed state to the runtime so later nodes' CEL resolves. It never
+// Reconcile drives the runtime node-by-node in topological order. Each node is
+// routed to a Target by the build-time routing map (keyed by resource id): a
+// template node has its desired object(s) applied via the matching Applier, while
+// an external node (externalRef) is read-only — its object(s) are fetched through
+// the matching Reader and never applied, labeled, owned, or recorded. Either way
+// the observed state feeds the runtime so later nodes' CEL resolves. It never
 // rolls back: partial application is reported via Result and a requeue.
-func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers map[Target]Applier) (Result, error) {
+func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers map[Target]Applier, readers map[Target]Reader, routing map[string]Target) (Result, error) {
 	res := Result{Ready: true}
 
 	for _, node := range rt.Nodes() {
@@ -87,17 +94,81 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 			return res, fmt.Errorf("node %s: %w", node.Spec.Meta.ID, err)
 		}
 
-		observed := make([]*unstructured.Unstructured, 0, len(desired))
-		for _, obj := range desired {
-			target, err := TargetOf(obj)
+		// Every object of a node shares the node's routing target.
+		target := TargetForNode(node.Spec.Meta.ID, routing)
+
+		//nolint:exhaustive // only external node types branch here; all other types fall through to the apply path below.
+		switch node.Spec.Meta.Type {
+		case graph.NodeTypeExternal:
+			// An external ref is read-only: fetch the referenced object through the
+			// target's Reader and feed it to the runtime. It is never applied.
+			reader, ok := readers[target]
+			if !ok {
+				return res, fmt.Errorf("node %s: no reader configured for target %q", node.Spec.Meta.ID, target)
+			}
+			if len(desired) == 0 { // nothing to read (empty desired) — skip
+				continue
+			}
+			d := desired[0]
+			obj, err := reader.Get(ctx, d.GroupVersionKind(), d.GetNamespace(), d.GetName())
+			if apierrors.IsNotFound(err) {
+				// The external object doesn't exist yet: wait for it. Return BEFORE
+				// res.Complete is set so prune stays disabled while the dependency
+				// is pending — the same convergence rule as ErrDataPending above.
+				res.Ready, res.Requeue = false, true
+
+				return res, nil
+			}
+			if err != nil {
+				return res, fmt.Errorf("node %s: external get: %w", node.Spec.Meta.ID, err)
+			}
+			node.SetObserved([]*unstructured.Unstructured{obj})
+			if node.CheckReadiness() != nil {
+				res.Ready, res.Requeue = false, true
+			}
+
+			continue
+		case graph.NodeTypeExternalCollection:
+			// An external collection is read-only: list objects matching the
+			// resolved selector through the target's Reader and feed them in.
+			reader, ok := readers[target]
+			if !ok {
+				return res, fmt.Errorf("node %s: no reader configured for target %q", node.Spec.Meta.ID, target)
+			}
+			if len(desired) == 0 { // nothing to read (empty desired) — skip
+				continue
+			}
+			d := desired[0]
+			selector, err := externalCollectionSelector(d)
 			if err != nil {
 				return res, fmt.Errorf("node %s: %w", node.Spec.Meta.ID, err)
 			}
-			StripRouting(obj)
-			applier, ok := appliers[target]
-			if !ok {
-				return res, fmt.Errorf("node %s: no applier configured for target %q", node.Spec.Meta.ID, target)
+			// Namespace comes from the resolved template; a namespaced kind with an
+			// empty namespace lists across all namespaces, cluster-scoped is always "".
+			ns := d.GetNamespace()
+			if !node.Spec.Meta.Namespaced {
+				ns = ""
 			}
+			items, err := reader.List(ctx, d.GroupVersionKind(), ns, selector)
+			if err != nil {
+				return res, fmt.Errorf("node %s: external list: %w", node.Spec.Meta.ID, err)
+			}
+			node.SetObserved(items)
+			if node.CheckReadiness() != nil {
+				res.Ready, res.Requeue = false, true
+			}
+
+			continue
+		}
+
+		// Default (Resource/Collection/Instance): apply every desired object of the
+		// node to its routing target and read the result back into the runtime.
+		applier, ok := appliers[target]
+		if !ok {
+			return res, fmt.Errorf("node %s: no applier configured for target %q", node.Spec.Meta.ID, target)
+		}
+		observed := make([]*unstructured.Unstructured, 0, len(desired))
+		for _, obj := range desired {
 			obs, err := applier.Apply(ctx, obj)
 			if err != nil {
 				return res, fmt.Errorf("node %s: apply to %s: %w", node.Spec.Meta.ID, target, err)
@@ -118,4 +189,25 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 	res.Complete = true
 
 	return res, nil
+}
+
+// externalCollectionSelector extracts the label selector from a resolved external
+// collection's synthetic template (metadata.selector). A missing selector means
+// "select everything". Mirrors kro's resolveExternalCollectionSelector.
+func externalCollectionSelector(desired *unstructured.Unstructured) (labels.Selector, error) {
+	raw, found, err := unstructured.NestedMap(desired.Object, "metadata", "selector")
+	if err != nil || !found {
+		//nolint:nilerr // mirror kro: a missing or non-map selector means "select everything".
+		return labels.Everything(), nil
+	}
+	ls := &metav1.LabelSelector{}
+	if err := k8sruntime.DefaultUnstructuredConverter.FromUnstructured(raw, ls); err != nil {
+		return nil, fmt.Errorf("converting external collection selector: %w", err)
+	}
+	selector, err := metav1.LabelSelectorAsSelector(ls)
+	if err != nil {
+		return nil, fmt.Errorf("invalid external collection selector: %w", err)
+	}
+
+	return selector, nil
 }

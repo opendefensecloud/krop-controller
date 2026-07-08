@@ -39,14 +39,13 @@ spec:
       configName: ${config.metadata.name}       # (3) a CEL projection onto the instance status
   resources:
     - id: config                                # (4) one child node
+      target: consumer                          # (6) route to the consumer workspace
       template:
         apiVersion: v1
         kind: ConfigMap
         metadata:
           name: ${schema.spec.region}-config    # (5) name derived from the instance input
           namespace: default
-          annotations:
-            krop.opendefense.cloud/target: consumer   # (6) route to the consumer workspace
         data:
           region: ${schema.spec.region}          # (7) CEL: copy the instance input in
 ```
@@ -67,15 +66,16 @@ What each piece does:
    the object to apply). We have exactly one child.
 5. **`${schema.spec.*}`** reads the instance's own input. This makes the child's
    name a function of the instance — `spec.region: eu` → `eu-config`.
-6. **`krop.opendefense.cloud/target: consumer`** routes the child to the
-   **consumer** workspace. (`consumer` is also the default when the annotation is
-   absent — we set it explicitly here for clarity.) krop strips this annotation
-   before applying, so it never lands on the ConfigMap.
+6. **`target: consumer`** is krop's per-resource routing field; it routes the
+   child to the **consumer** workspace. (`consumer` is also the default when
+   `target` is omitted — we set it explicitly here for clarity. The other values
+   are `provider` and `host`.) It is a sibling of `template`, not a field inside
+   it, so it never lands on the ConfigMap.
 7. Any template field can be a `${...}` CEL expression.
 
-That's the whole surface: a schema, one resource, a target annotation, and a
-couple of `${schema.spec.*}` reads. See [blueprints.md](../blueprints.md) for the
-full set of fields (`readyWhen`, `includeWhen`, `forEach`).
+That's the whole surface: a schema, one resource, a `target`, and a couple of
+`${schema.spec.*}` reads. See [blueprints.md](../blueprints.md) for the full set of
+fields (`target`, `externalRef`, `readyWhen`, `includeWhen`, `forEach`).
 
 ---
 

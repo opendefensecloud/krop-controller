@@ -20,9 +20,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ResourceGraphDefinition is a provider-authored blueprint. Its spec is
-          identical to kro's ResourceGraphDefinition spec (routing lives in per-resource
-          template annotations); the engine parses it into kro's type unchanged.
+          ResourceGraphDefinition is a provider-authored blueprint. Its spec wraps kro's
+          ResourceGraphDefinition spec (Schema + Resources), adding a per-resource routing
+          `target` field; ToKro strips the targets back into kro's type for the builder.
         properties:
           apiVersion:
             description: |-
@@ -43,20 +43,14 @@ spec:
             type: object
           spec:
             description: |-
-              ResourceGraphDefinitionSpec defines the desired state of ResourceGraphDefinition.
-              It contains the schema for instances (defining the CRD structure) and the list of
-              Kubernetes resources that make up the graph.
+              ResourceGraphDefinitionSpec is kro's spec (Schema + Resources) with each
+              resource carrying a routing Target. ToKro strips the targets back out.
             properties:
               resources:
-                description: |-
-                  Resources is the list of Kubernetes resources that will be created and managed
-                  for each instance. Resources can reference each other using CEL expressions,
-                  creating a dependency graph that determines creation order.
                 items:
                   description: |-
-                    Resource represents a Kubernetes resource that is part of the ResourceGraphDefinition.
-                    Each resource can either be created using a template or reference an existing resource.
-                    Resources can depend on each other through CEL expressions, creating a dependency graph.
+                    Resource wraps a kro resource with a krop routing target. All kro fields
+                    (id/template/externalRef/readyWhen/includeWhen/forEach) are inlined verbatim.
                   properties:
                     externalRef:
                       description: |-
@@ -198,6 +192,14 @@ spec:
                       items:
                         type: string
                       type: array
+                    target:
+                      description: 'Target routes this resource''s object(s): consumer
+                        (default) | provider | host.'
+                      enum:
+                      - consumer
+                      - provider
+                      - host
+                      type: string
                     template:
                       description: |-
                         Template is the Kubernetes resource manifest to create.
@@ -215,9 +217,10 @@ spec:
                 type: array
               schema:
                 description: |-
-                  Schema defines the structure of instances created from this ResourceGraphDefinition.
-                  It specifies the API version, kind, and fields (spec/status) for the generated CRD.
-                  Use SimpleSchema syntax to define the instance schema concisely.
+                  Schema defines the structure and behavior of instances created from a ResourceGraphDefinition.
+                  It specifies the API group, version, and kind for the generated CRD, along with the
+                  spec and status schemas using SimpleSchema syntax. You can also define custom types,
+                  validation rules, and printer columns.
                 properties:
                   additionalPrinterColumns:
                     description: |-

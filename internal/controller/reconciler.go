@@ -64,6 +64,11 @@ type Reconciler struct {
 	Graph *krograph.Graph
 	// ProviderClient writes provider-target children into the provider workspace.
 	ProviderClient client.Client
+	// HostClient writes host-target children into the physical host cluster. It is
+	// nil when the host target is disabled (no host kubeconfig / not in-cluster),
+	// in which case the host applier/reader/GC entries are omitted entirely and a
+	// blueprint routing to host fails loudly via the engine's missing-applier error.
+	HostClient client.Client
 	// InstanceGVK is the generated instance kind this reconciler serves.
 	InstanceGVK schema.GroupVersionKind
 	// BlueprintName is the blueprint/export identifier stamped as the
@@ -72,6 +77,10 @@ type Reconciler struct {
 	// RecordNamespace is the provider-workspace namespace where the per-instance
 	// liveness record (a ConfigMap) is written. Defaults to "default" when empty.
 	RecordNamespace string
+	// Routing maps resource id → target for this blueprint's nodes (empty targets
+	// default to consumer). Populated on publish from the wrapper spec's ToKro.
+	// Not yet consumed by the engine (annotation-based routing remains this task).
+	Routing map[string]kropengine.Target
 }
 
 // recordNamespace returns the configured liveness-record namespace, or the
@@ -140,7 +149,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	// complete pass can prune labeled children no longer in the desired set.
 	// RecordingApplier is the INNERMOST decorator (wrapping SSA) so it observes
 	// the object AFTER QualifyingApplier's rename and LabelingApplier's labels.
-	var appliedConsumer, appliedProvider []kropengine.ChildID
+	var appliedConsumer, appliedProvider, appliedHost []kropengine.ChildID
 	appliers := map[kropengine.Target]kropengine.Applier{
 		kropengine.TargetConsumer: kropengine.NewLabelingApplier(
 			kropengine.NewOwnerRefApplier(
@@ -152,7 +161,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 			labels),
 	}
 
-	res, err := kropengine.New().Reconcile(ctx, rt, appliers)
+	// External-ref nodes are read (never applied) through the per-target Reader.
+	readers := map[kropengine.Target]kropengine.Reader{
+		kropengine.TargetConsumer: kropengine.NewClientReader(consumerClient),
+		kropengine.TargetProvider: kropengine.NewClientReader(r.ProviderClient),
+	}
+
+	// The host target reuses the provider applier/naming/label machinery over a
+	// separate host-cluster client. Only wired when a host client is configured so
+	// consumer/provider-only deployments (nil HostClient) never dial a host cluster.
+	if r.HostClient != nil {
+		appliers[kropengine.TargetHost] = kropengine.NewLabelingApplier(
+			kropengine.NewQualifyingApplier(
+				kropengine.NewRecordingApplier(kropengine.NewSSAApplier(r.HostClient), &appliedHost),
+				func(orig string) string { return kropengine.ProviderChildName(clusterName, instanceName, orig) }),
+			labels)
+		readers[kropengine.TargetHost] = kropengine.NewClientReader(r.HostClient)
+	}
+
+	res, err := kropengine.New().Reconcile(ctx, rt, appliers, readers, r.Routing)
 	if err != nil {
 		return res, err
 	}
@@ -179,10 +206,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	// still-desired children it simply had not re-applied yet. The deletion path
 	// (above) already GCs everything, so skip prune when the instance is deleting.
 	if res.Complete && inst.GetDeletionTimestamp() == nil {
-		if err := r.pruneChildren(ctx, consumerClient, string(inst.GetUID()), map[kropengine.Target][]kropengine.ChildID{
+		applied := map[kropengine.Target][]kropengine.ChildID{
 			kropengine.TargetConsumer: appliedConsumer,
 			kropengine.TargetProvider: appliedProvider,
-		}); err != nil {
+		}
+		if r.HostClient != nil {
+			applied[kropengine.TargetHost] = appliedHost
+		}
+		if err := r.pruneChildren(ctx, consumerClient, string(inst.GetUID()), applied); err != nil {
 			return res, err
 		}
 	}
@@ -285,10 +316,14 @@ func writeConditions(inst *unstructured.Unstructured, conditions []metav1.Condit
 // the compiled graph. Consumer children are also owner-ref backstopped.
 func (r *Reconciler) deleteChildren(ctx context.Context, consumerClient client.Client, instanceUID string) error {
 	sel := client.MatchingLabels{kropengine.LabelInstanceUID: instanceUID}
-	for target, cl := range map[kropengine.Target]client.Client{
+	clients := map[kropengine.Target]client.Client{
 		kropengine.TargetConsumer: consumerClient,
 		kropengine.TargetProvider: r.ProviderClient,
-	} {
+	}
+	if r.HostClient != nil {
+		clients[kropengine.TargetHost] = r.HostClient
+	}
+	for target, cl := range clients {
 		for _, gvk := range r.childGVKs(target) {
 			list := &unstructured.UnstructuredList{}
 			list.SetGroupVersionKind(gvk)
@@ -314,10 +349,14 @@ func (r *Reconciler) deleteChildren(ctx context.Context, consumerClient client.C
 // pending pass's partial applied set would delete still-desired children.
 func (r *Reconciler) pruneChildren(ctx context.Context, consumerClient client.Client, instanceUID string, applied map[kropengine.Target][]kropengine.ChildID) error {
 	sel := client.MatchingLabels{kropengine.LabelInstanceUID: instanceUID}
-	for target, cl := range map[kropengine.Target]client.Client{
+	clients := map[kropengine.Target]client.Client{
 		kropengine.TargetConsumer: consumerClient,
 		kropengine.TargetProvider: r.ProviderClient,
-	} {
+	}
+	if r.HostClient != nil {
+		clients[kropengine.TargetHost] = r.HostClient
+	}
+	for target, cl := range clients {
 		keep := make(map[kropengine.ChildID]bool, len(applied[target]))
 		for _, id := range applied[target] {
 			keep[id] = true
@@ -345,12 +384,16 @@ func (r *Reconciler) pruneChildren(ctx context.Context, consumerClient client.Cl
 }
 
 // childGVKs returns the distinct child GVKs of the given target from the graph.
+// External-ref nodes are skipped: we only read (never create) those objects, so
+// they must never be enumerated for GC or prune.
 func (r *Reconciler) childGVKs(target kropengine.Target) []schema.GroupVersionKind {
 	seen := map[schema.GroupVersionKind]bool{}
 	var out []schema.GroupVersionKind
 	for _, node := range r.Graph.Nodes {
-		t, err := kropengine.TargetOf(node.Template)
-		if err != nil || t != target {
+		if node.Meta.Type == krograph.NodeTypeExternal || node.Meta.Type == krograph.NodeTypeExternalCollection {
+			continue
+		}
+		if kropengine.TargetForNode(node.Meta.ID, r.Routing) != target {
 			continue
 		}
 		gvk := node.Template.GroupVersionKind()
@@ -376,7 +419,11 @@ func (r *Reconciler) writeLivenessRecord(ctx context.Context, clusterName, insta
 	}
 	data := map[string]string{
 		"lastReconciled":    time.Now().UTC().Format(time.RFC3339),
-		"providerChildGVKs": r.providerChildGVKString(),
+		"providerChildGVKs": r.childGVKString(kropengine.TargetProvider),
+		// Host children live in a separate cluster; record their GVKs so the
+		// sweeper can reclaim them via the host client. Empty ("") when the host
+		// target is disabled/unused — harmless (no tokens to sweep).
+		"hostChildGVKs": r.childGVKString(kropengine.TargetHost),
 	}
 
 	key := client.ObjectKey{Namespace: r.recordNamespace(), Name: kropengine.LivenessRecordName(clusterName, instanceUID)}
@@ -427,12 +474,13 @@ func (r *Reconciler) deleteLivenessRecord(ctx context.Context, clusterName, inst
 	return nil
 }
 
-// providerChildGVKString serializes the provider-target child GVKs as a
-// comma-joined list of "group/version/Kind" tokens, so the sweeper knows what to
-// delete for an orphaned instance without re-deriving the graph. The core group
-// serializes with an empty first segment (e.g. "/v1/ConfigMap").
-func (r *Reconciler) providerChildGVKString() string {
-	gvks := r.childGVKs(kropengine.TargetProvider)
+// childGVKString serializes a target's child GVKs as a comma-joined list of
+// "group/version/Kind" tokens, so the sweeper knows what to delete for an
+// orphaned instance without re-deriving the graph. The core group serializes
+// with an empty first segment (e.g. "/v1/ConfigMap"). A target with no children
+// (e.g. host when disabled) yields "".
+func (r *Reconciler) childGVKString(target kropengine.Target) string {
+	gvks := r.childGVKs(target)
 	tokens := make([]string, 0, len(gvks))
 	for _, gvk := range gvks {
 		tokens = append(tokens, gvk.Group+"/"+gvk.Version+"/"+gvk.Kind)

@@ -45,6 +45,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -95,8 +97,9 @@ const (
 // servedBlueprint is what the Registrar records on publish and the per-export
 // manager needs to serve: the compiled graph and the generated instance kind.
 type servedBlueprint struct {
-	graph *krograph.Graph
-	gvk   schema.GroupVersionKind
+	graph   *krograph.Graph
+	gvk     schema.GroupVersionKind
+	routing map[string]kropengine.Target
 }
 
 // published is a thread-safe registry of served blueprints keyed by export name.
@@ -160,6 +163,12 @@ func run() error {
 		// Default to the pod namespace via POD_NAMESPACE, falling back to "default".
 		leaderElectNamespace = flag.String("leader-election-namespace", podNamespace(),
 			"The namespace in which the leader-election Lease is created (in the provider workspace).")
+		// hostKubeconfig points at the physical host cluster into which host-target
+		// children are provisioned. Empty falls back to in-cluster config; when
+		// neither is available the host target is disabled (blueprints routing to
+		// host then fail loudly via the engine's missing-applier error).
+		hostKubeconfig = flag.String("host-kubeconfig", "",
+			"Path to a kubeconfig for the host cluster to provision host-target children into. Defaults to in-cluster config; empty + no in-cluster config disables the host target.")
 	)
 
 	// zap logging flags (--zap-log-level, --zap-devel, --zap-encoder, ...). The
@@ -233,6 +242,41 @@ func run() error {
 	providerClient, err := client.New(cfg, client.Options{Scheme: providerScheme})
 	if err != nil {
 		return fmt.Errorf("provider client: %w", err)
+	}
+
+	// Resolve the host-cluster client used for host-target children. An explicit
+	// --host-kubeconfig is loaded (and a load error is fatal); otherwise fall back
+	// to in-cluster config. When there is no in-cluster config either (a dev run
+	// outside a pod), the host target is DISABLED — hostClient stays nil so the
+	// Reconciler omits the host applier/reader/GC entries and never dials a host.
+	var hostClient client.Client
+	var hostCfg *rest.Config
+	if *hostKubeconfig != "" {
+		hostCfg, err = clientcmd.BuildConfigFromFlags("", *hostKubeconfig)
+		if err != nil {
+			return fmt.Errorf("loading host kubeconfig %q: %w", *hostKubeconfig, err)
+		}
+	} else {
+		hostCfg, err = rest.InClusterConfig()
+		if err != nil {
+			// Not in a pod and no explicit kubeconfig: host target is optional, so
+			// treat this as disabled rather than fatal.
+			hostCfg = nil
+			entryLog.Info("host target disabled (no host kubeconfig / not in-cluster)")
+		}
+	}
+	if hostCfg != nil {
+		// Host children are applied as unstructured, so clientgoscheme (core types)
+		// is sufficient for the host client — mirror the provider scheme's registration.
+		hostScheme := runtime.NewScheme()
+		if serr := clientgoscheme.AddToScheme(hostScheme); serr != nil {
+			return fmt.Errorf("registering host scheme: %w", serr)
+		}
+		hostClient, err = client.New(hostCfg, client.Options{Scheme: hostScheme})
+		if err != nil {
+			return fmt.Errorf("host client: %w", err)
+		}
+		entryLog.Info("host target enabled")
 	}
 
 	graphSource, err := kropengine.NewEndpointGraphSource(cfg)
@@ -318,8 +362,10 @@ func run() error {
 		reconciler := &kropctrl.Reconciler{
 			Graph:          sb.graph,
 			ProviderClient: providerClient,
+			HostClient:     hostClient,
 			InstanceGVK:    sb.gvk,
 			BlueprintName:  exportName,
+			Routing:        sb.routing,
 		}
 
 		reconcileFn := mcreconcile.Func(func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -377,9 +423,9 @@ func run() error {
 		Workspace: workspace,
 		Cache:     registrar.NewGraphCache(),
 		Source:    graphSource,
-		OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, changed bool) {
+		OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, routing map[string]kropengine.Target, changed bool) {
 			// Always update the served graph so a restarted startFn reads the latest.
-			registry.Set(exportName, servedBlueprint{graph: g, gvk: instanceGVK})
+			registry.Set(exportName, servedBlueprint{graph: g, gvk: instanceGVK, routing: routing})
 			// When the compiled graph CHANGED (new blueprint or spec edit), stop the
 			// running manager first so Ensure restarts it and its reconciler closure
 			// re-reads the updated registry graph — otherwise a live spec edit would
@@ -412,6 +458,7 @@ func run() error {
 	// reconciling against the liveness records the instance reconciler refreshes.
 	if err := mgr.Add(&kropctrl.Sweeper{
 		ProviderClient: providerClient,
+		HostClient:     hostClient,
 		StaleAfter:     orphanStaleAfter,
 		SweepInterval:  orphanSweepInterval,
 	}); err != nil {

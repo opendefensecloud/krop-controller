@@ -132,8 +132,8 @@ func startDynamicHarness(ctx context.Context, opts harnessOptions) *dynamicHarne
 		Workspace: h.providerPath.String(),
 		Cache:     registrar.NewGraphCache(),
 		Source:    graphSource,
-		OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, changed bool) {
-			h.registry.Set(exportName, servedGraph{graph: g, gvk: instanceGVK})
+		OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, routing map[string]kropengine.Target, changed bool) {
+			h.registry.Set(exportName, servedGraph{graph: g, gvk: instanceGVK, routing: routing})
 			if changed {
 				h.sup.Stop(exportName)
 			}
@@ -256,6 +256,7 @@ func (h *dynamicHarness) startFn() supervisor.StartFunc {
 			ProviderClient: h.providerClient,
 			InstanceGVK:    sg.gvk,
 			BlueprintName:  exportName,
+			Routing:        sg.routing,
 		}
 
 		// Mirror cmd/controller/main.go: a spec-change restart re-runs this builder

@@ -57,7 +57,7 @@ the identity, author a blueprint, bind, create an instance), follow
 [docs/getting-started.md](docs/getting-started.md).
 
 A **blueprint** is just a kro RGD served under krop's group, plus one routing
-annotation per child. Abbreviated (full example:
+`target` per resource. Abbreviated (full example:
 [`test/fixtures/blueprint-kubernetescluster-rgd.yaml`](test/fixtures/blueprint-kubernetescluster-rgd.yaml)):
 
 ```yaml
@@ -76,20 +76,20 @@ spec:
       agentToken: ${agentRequest.status.token}
   resources:
     - id: agentRequest                       # PROVIDER-target child
+      target: provider
       template:
         apiVersion: fulfil.krop.opendefense.cloud/v1alpha1
         kind: AgentRequest
         metadata:
           name: ${schema.spec.region}-agent
-          annotations: { krop.opendefense.cloud/target: provider }
         spec: { region: ${schema.spec.region} }
     - id: config                             # CONSUMER-target child (default)
+      target: consumer
       template:
         apiVersion: v1
         kind: ConfigMap
         metadata:
           name: ${schema.spec.region}-cluster-config
-          annotations: { krop.opendefense.cloud/target: consumer }
         data:
           token: ${agentRequest.status.token}   # cross-target CEL read
 ```
@@ -105,11 +105,18 @@ New to blueprints? Start with
 
 - **Declarative blueprints.** Author one kro `ResourceGraphDefinition`; krop serves
   the generated instance kind. No per-offering Go controller.
-- **Dual-target materialization.** Each child is routed by a single
-  `krop.opendefense.cloud/target` annotation: `consumer` children land in the
-  tenant workspace (through the APIExport **virtual workspace** + the consumer's
-  **accepted permissionClaims**); `provider` children land in the provider
-  workspace (written with the controller's **own** kcp identity).
+- **Three-target materialization.** Each resource is routed by a single
+  per-resource `target` field (default `consumer`): `consumer` children land in
+  the tenant workspace (through the APIExport **virtual workspace** + the
+  consumer's **accepted permissionClaims**); `provider` children land in the
+  provider workspace (written with the controller's **own** kcp identity); `host`
+  children land in the **physical host cluster** the controller runs in.
+- **External references (read-only).** A resource can be an `externalRef` instead
+  of a `template` — an existing object krop **reads but never creates or GCs**
+  (single by `metadata.name`, or a collection by `metadata.selector`). Routed by
+  `target` like any resource, its observed `status`/`data` funnels into other
+  resources via `${id.status.x}` CEL — e.g. read a VPC in the consumer plane and
+  feed `${vpc.status.vpcId}` into a VM written to the host cluster.
 - **Cross-target CEL dependencies.** A consumer child can read a provider child's
   live `status.*` via `${...}` CEL; it **pends** until that status is set, then
   materializes.
@@ -142,7 +149,7 @@ New to blueprints? Start with
 | — [Troubleshooting](docs/guides/troubleshooting.md) | Problem → cause → fix, with concrete `kubectl` checks. |
 | [Blueprint authoring](docs/blueprints.md) | The RGD reference: schema, resources, CEL, target routing, claims, naming, pruning. |
 | [Architecture](docs/architecture.md) | How krop is built and why; workspace topology, components, key flows, Mermaid diagrams. |
-| [Decisions (ADRs)](docs/decisions/) | The 10 significant design decisions. |
+| [Decisions (ADRs)](docs/decisions/) | The 11 significant design decisions. |
 | [Permissions](docs/permissions.md) | The least-privilege authorization model and checklist. |
 | [Operations](docs/operations.md) | Production ops: flags, RBAC, observability, GC/sweep, upgrades, troubleshooting. |
 

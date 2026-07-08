@@ -49,13 +49,13 @@ func newRuntime(t *testing.T, inst *unstructured.Unstructured) *runtime.Runtime 
 	return rt
 }
 
-func TestReconcile_AppliesConsumerChild_StripsRouting(t *testing.T) {
+func TestReconcile_AppliesConsumerChild(t *testing.T) {
 	inst := newInstance()
 	rt := newRuntime(t, inst)
 	consumer := &fakeApplier{}
 
 	e := New()
-	res, err := e.Reconcile(context.Background(), rt, map[Target]Applier{TargetConsumer: consumer, TargetProvider: &fakeApplier{}})
+	res, err := e.Reconcile(context.Background(), rt, map[Target]Applier{TargetConsumer: consumer, TargetProvider: &fakeApplier{}}, nil, sampleRouting())
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -70,10 +70,6 @@ func TestReconcile_AppliesConsumerChild_StripsRouting(t *testing.T) {
 	if region, _, _ := unstructured.NestedString(got.Object, "data", "region"); region != "eu" {
 		t.Fatalf("child data.region = %q, want eu", region)
 	}
-	// routing annotation stripped before apply:
-	if _, ok := got.GetAnnotations()[TargetAnnotation]; ok {
-		t.Fatal("routing annotation leaked onto applied object")
-	}
 	if res.Ready != true {
 		t.Fatalf("want Ready=true (ConfigMap has no readyWhen), got %+v", res)
 	}
@@ -86,7 +82,7 @@ func TestReconcile_UnconfiguredTargetErrors(t *testing.T) {
 	rt := newRuntime(t, newInstance())
 	e := New()
 	// No consumer applier configured → the single consumer child cannot route.
-	_, err := e.Reconcile(context.Background(), rt, map[Target]Applier{})
+	_, err := e.Reconcile(context.Background(), rt, map[Target]Applier{}, nil, sampleRouting())
 	if err == nil {
 		t.Fatal("want error when the child's target has no configured applier")
 	}
@@ -98,7 +94,7 @@ func TestReconcile_ProjectsInstanceStatus(t *testing.T) {
 	consumer := &fakeApplier{}
 
 	e := New()
-	if _, err := e.Reconcile(context.Background(), rt, map[Target]Applier{TargetConsumer: consumer, TargetProvider: &fakeApplier{}}); err != nil {
+	if _, err := e.Reconcile(context.Background(), rt, map[Target]Applier{TargetConsumer: consumer, TargetProvider: &fakeApplier{}}, nil, sampleRouting()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	// The blueprint maps status.configMapName = ${config.metadata.name}.
@@ -126,9 +122,8 @@ func brokenCELRGD() *krov1alpha1.ResourceGraphDefinition {
 		generator.WithResource("config", map[string]any{
 			"apiVersion": "v1", "kind": "ConfigMap",
 			"metadata": map[string]any{
-				"name":        "cfg",
-				"namespace":   "default",
-				"annotations": map[string]any{TargetAnnotation: string(TargetConsumer)},
+				"name":      "cfg",
+				"namespace": "default",
 			},
 			// int("abc") is a runtime type-conversion error, not data-pending.
 			"data": map[string]any{"n": "${string(int(schema.spec.region))}"},
@@ -155,7 +150,7 @@ func TestReconcile_GenuineGetDesiredError_IsReturned(t *testing.T) {
 
 	res, err := New().Reconcile(context.Background(), rt, map[Target]Applier{
 		TargetConsumer: &fakeApplier{}, TargetProvider: &fakeApplier{},
-	})
+	}, nil, nil)
 	if err == nil {
 		t.Fatalf("want a hard error for a genuine CEL failure, got nil (res=%+v)", res)
 	}
@@ -177,7 +172,7 @@ func TestReconcile_RoutesToBothTargets(t *testing.T) {
 	res, err := e.Reconcile(context.Background(), rt, map[Target]Applier{
 		TargetConsumer: consumer,
 		TargetProvider: provider,
-	})
+	}, nil, sampleRouting())
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}

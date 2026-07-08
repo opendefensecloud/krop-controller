@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted.
+**Superseded by [0011](0011-external-refs-and-host-target.md).** The
+`krop.opendefense.cloud/target` annotation described here has been replaced by a
+per-resource `target` **field** on a thin krop wrapper spec (and the target set
+grew from `consumer|provider` to `consumer|provider|host`). The historical body
+below is kept for context.
 
 ## Context
 

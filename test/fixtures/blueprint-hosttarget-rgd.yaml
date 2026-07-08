@@ -1,0 +1,30 @@
+# test/fixtures/blueprint-hosttarget-rgd.yaml
+# Host-target e2e blueprint: a single ConfigMap child routed to the host plane
+# (target: host). It is written to the host client with a collision-free
+# ProviderChildName and GC labels. includeWhen lets the test toggle the child out
+# of the desired set (spec.enabled=false) to exercise host-child prune.
+apiVersion: krop.opendefense.cloud/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: hostapp
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: HostApp
+    group: krop.opendefense.cloud
+    spec:
+      name: string
+      enabled: boolean
+  resources:
+    - id: hostchild
+      target: host
+      includeWhen:
+        - ${schema.spec.enabled}
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${schema.spec.name}-hostcm
+          namespace: default
+        data:
+          managed: "true"

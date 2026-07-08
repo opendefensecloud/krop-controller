@@ -34,6 +34,19 @@ type fakeApplier struct {
 	mutate func(*unstructured.Unstructured)
 }
 
+// obj builds a minimal ConfigMap unstructured for applier tests.
+func obj(annos map[string]string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": "x"},
+	}}
+	if annos != nil {
+		u.SetAnnotations(annos)
+	}
+
+	return u
+}
+
 func (f *fakeApplier) Apply(_ context.Context, o *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	f.applied = append(f.applied, o.DeepCopy())
 	observed := o.DeepCopy()
