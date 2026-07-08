@@ -99,13 +99,16 @@ rules:
   # (design §9). These GVKs are defined by the operator's blueprints and are
   # therefore NOT knowable at chart-install time.
   #
-  # The rules below are an EXAMPLE matching krop's shipped example blueprint
-  # (config/kcp/examples/blueprint-kubernetescluster.yaml), which emits a
-  # fulfil.krop.opendefense.cloud/AgentRequest as its provider-target child.
+  # krop's shipped example blueprint
+  # (config/kcp/examples/blueprint-hosteddatabase.yaml) targets a CORE ConfigMap
+  # (`registration`) at the provider — that GVK is ALREADY covered by the required
+  # configmaps rule below, so the shipped example needs NO extra rule here.
   #
-  # OPERATORS MUST replace/extend these with the EXACT provider-target GVKs
-  # their own blueprints emit. Do NOT substitute a `*`/`*` wildcard rule — that
-  # re-creates the broad grant this least-privilege model exists to remove.
+  # The rule below is a GENERIC example (a fulfil.krop.opendefense.cloud GVK)
+  # showing the SHAPE a foreign (non-core) provider-target type needs. OPERATORS
+  # MUST replace/extend it with the EXACT provider-target GVKs their own blueprints
+  # emit. Do NOT substitute a `*`/`*` wildcard rule — that re-creates the broad
+  # grant this least-privilege model exists to remove.
   - apiGroups: ["fulfil.krop.opendefense.cloud"]
     resources: ["agentrequests"]
     verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
@@ -113,9 +116,8 @@ rules:
   # "liveness record" ConfigMap into the provider workspace on each reconcile so
   # the orphan sweeper can detect instances whose consumer unbound the APIExport
   # mid-life (the finalizer never fires) and clean up their provider children.
-  # (This rule ALSO covers any provider-target ConfigMaps a blueprint emits;
-  # krop's example blueprint targets its ConfigMap at the CONSUMER, authorized
-  # via permissionClaim, not this rule.)
+  # (This rule ALSO covers any provider-target ConfigMaps a blueprint emits — e.g.
+  # the shipped HostedDatabase example's `registration` provider child.)
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]

@@ -58,40 +58,64 @@ the identity, author a blueprint, bind, create an instance), follow
 
 A **blueprint** is just a kro RGD served under krop's group, plus one routing
 `target` per resource. Abbreviated (full example:
-[`test/fixtures/blueprint-kubernetescluster-rgd.yaml`](test/fixtures/blueprint-kubernetescluster-rgd.yaml)):
+[`config/kcp/examples/blueprint-hosteddatabase.yaml`](config/kcp/examples/blueprint-hosteddatabase.yaml)):
 
 ```yaml
 apiVersion: krop.opendefense.cloud/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
-  name: kubernetescluster
+  name: hosteddatabase
 spec:
   schema:                                   # the generated instance API
     apiVersion: v1alpha1
-    kind: KubernetesCluster
+    kind: HostedDatabase
     group: krop.opendefense.cloud
     spec:
-      region: string
+      name: string
+      engine: string | default="postgres"
     status:
-      agentToken: ${agentRequest.status.token}
+      endpoint: ${connection.data.endpoint}
+      vpcID: ${vpc.status.vpcID}
   resources:
-    - id: agentRequest                       # PROVIDER-target child
-      target: provider
-      template:
-        apiVersion: fulfil.krop.opendefense.cloud/v1alpha1
-        kind: AgentRequest
+    - id: vpc                                # CONSUMER-target read-only externalRef
+      target: consumer
+      externalRef:
+        apiVersion: ec2.services.k8s.aws/v1alpha1
+        kind: VPC
         metadata:
-          name: ${schema.spec.region}-agent
-        spec: { region: ${schema.spec.region} }
-    - id: config                             # CONSUMER-target child (default)
+          name: ${schema.spec.name}-vpc
+    - id: db                                 # HOST-target child (physical host cluster)
+      target: host
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          # prefix the child name with the consumer's kcp logical-cluster name
+          # (globally unique + immutable) so two tenants never collide on the host.
+          name: ${schema.metadata.annotations["krop.opendefense.cloud/consumer-cluster"]}-${schema.spec.name}
+          namespace: databases
+        spec:
+          replicas: 1
+          selector: { matchLabels: { app: ${schema.spec.name} } }
+          template:
+            metadata: { labels: { app: ${schema.spec.name} } }
+            spec:
+              containers:
+                - name: db
+                  image: ${schema.spec.engine}:16
+                  env:
+                    - name: VPC_ID
+                      value: ${vpc.status.vpcID}   # consumer read → host write
+    - id: connection                         # CONSUMER-target child (default)
       target: consumer
       template:
         apiVersion: v1
         kind: ConfigMap
         metadata:
-          name: ${schema.spec.region}-cluster-config
+          name: ${schema.spec.name}-connection
         data:
-          token: ${agentRequest.status.token}   # cross-target CEL read
+          endpoint: ${db.metadata.name}.databases.svc.cluster.local  # host → consumer CEL
+          vpcID: ${vpc.status.vpcID}
 ```
 
 New to blueprints? Start with
@@ -120,6 +144,11 @@ New to blueprints? Start with
 - **Cross-target CEL dependencies.** A consumer child can read a provider child's
   live `status.*` via `${...}` CEL; it **pends** until that status is set, then
   materializes.
+- **Consumer workspace info in CEL.** The reconciler stamps the consumer's kcp
+  logical-cluster name (globally unique + immutable) onto each instance as the
+  `krop.opendefense.cloud/consumer-cluster` annotation, so a blueprint can derive
+  **collision-free** host/provider child names by prefixing with
+  `${schema.metadata.annotations["krop.opendefense.cloud/consumer-cluster"]}`.
 - **Automatic APIExport publication.** The Registrar compiles each blueprint,
   mints an `APIResourceSchema`, **auto-derives** the `permissionClaims` from the
   consumer-target node GVRs, and upserts the `APIExport`.
@@ -149,7 +178,7 @@ New to blueprints? Start with
 | — [Troubleshooting](docs/guides/troubleshooting.md) | Problem → cause → fix, with concrete `kubectl` checks. |
 | [Blueprint authoring](docs/blueprints.md) | The RGD reference: schema, resources, CEL, target routing, claims, naming, pruning. |
 | [Architecture](docs/architecture.md) | How krop is built and why; workspace topology, components, key flows, Mermaid diagrams. |
-| [Decisions (ADRs)](docs/decisions/) | The 11 significant design decisions. |
+| [Decisions (ADRs)](docs/decisions/) | The 12 significant design decisions. |
 | [Permissions](docs/permissions.md) | The least-privilege authorization model and checklist. |
 | [Operations](docs/operations.md) | Production ops: flags, RBAC, observability, GC/sweep, upgrades, troubleshooting. |
 

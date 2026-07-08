@@ -17,4 +17,5 @@ grounded in the code on `main`.
 | [0009](0009-change-detected-manager-restart.md) | Change-detected manager restart for live spec edits (over multi-version serving) |
 | [0010](0010-envtest-in-process-manager-bind-first.md) | envtest e2e drives an in-process manager against the vw with bind-first ordering |
 | [0011](0011-external-refs-and-host-target.md) | External refs + a `host` write target, routed by a per-resource `target` field |
+| [0012](0012-consumer-workspace-info-in-cel.md) | Surface the consumer's logical-cluster name to blueprint CEL via a runtime-only instance annotation |
 </content>

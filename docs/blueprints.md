@@ -26,21 +26,24 @@ pristine kro types. The object is **cluster-scoped** in the provider workspace.
 apiVersion: krop.opendefense.cloud/v1alpha1   # krop's group…
 kind: ResourceGraphDefinition                 # …but kro's RGD spec verbatim
 metadata:
-  name: kubernetescluster                      # blueprint name (cluster-scoped)
+  name: hosteddatabase                         # blueprint name (cluster-scoped)
 spec:
   schema:        # the generated instance API: its spec + status (kro SimpleSchema)
     apiVersion: v1alpha1
-    kind: KubernetesCluster
+    kind: HostedDatabase
     group: krop.opendefense.cloud
     spec:
-      region: string
+      name: string
+      engine: string | default="postgres"
     status:
-      configMapName: ${config.metadata.name}
-      agentToken: ${agentRequest.status.token}
+      endpoint: ${connection.data.endpoint}
+      vpcID: ${vpc.status.vpcID}
   resources:     # the graph of child objects the instance materializes
-    - id: agentRequest
+    - id: vpc
+      externalRef: { ... }
+    - id: db
       template: { ... }
-    - id: config
+    - id: connection
       template: { ... }
 ```
 
@@ -204,12 +207,16 @@ Templates and `schema.status` use kro's `${...}` CEL. The handles krop supports:
   `${schema.spec.region}`.
 - **`${<resourceId>.status.*}`** (and `.metadata.*`, `.spec.*`) — read another
   node's live object. This works **cross-resource and cross-target**: a
-  **consumer**-target child can read a **provider**-target child's status. In the
-  example, the consumer `ConfigMap` reads `${agentRequest.status.token}` from the
-  provider-target `AgentRequest`.
+  **consumer**-target child can read a **host**- or **provider**-target child's
+  status/metadata. In the example, the consumer `connection` `ConfigMap` reads
+  `${db.metadata.name}` from the host-target `Deployment`.
+- **`${schema.metadata.annotations["krop.opendefense.cloud/consumer-cluster"]}`** —
+  the consumer's kcp logical-cluster name, stamped by the reconciler so blueprints
+  can derive collision-free host/provider child names. See
+  [Consumer workspace info in CEL](#consumer-workspace-info-in-cel).
 - **`schema.status.*`** — CEL projections written back onto each instance's
-  `.status`. In the example, `configMapName: ${config.metadata.name}` and
-  `agentToken: ${agentRequest.status.token}`.
+  `.status`. In the example, `endpoint: ${connection.data.endpoint}` and
+  `vpcID: ${vpc.status.vpcID}`.
 
 **Cross-target dependencies pend, they do not fail.** If a consumer child reads a
 provider child's status that is not set yet, that child **pends** — the reconcile
@@ -275,9 +282,59 @@ same instance always addresses the same provider child.
 Consumer-target children keep their literal name — they live in the consumer's own
 workspace, so there is no cross-tenant collision.
 
-> **CEL reads still work across the rename.** `${agentRequest.status.token}`
-> resolves against the live renamed object; you reference the node by its `id`,
-> not its on-cluster name.
+> **CEL reads still work across the rename.** `${db.metadata.name}` resolves
+> against the live renamed object; you reference the node by its `id`, not its
+> on-cluster name.
+
+---
+
+## Consumer workspace info in CEL
+
+krop renames **provider**-target children automatically (above), but **host**- and
+**consumer**-target children keep their template `metadata.name`. When many tenants
+share one host cluster (or provider namespace), a literal name like `db` would
+collide. To let a blueprint build collision-free names itself, the reconciler
+stamps the **consumer's kcp logical-cluster name** onto each instance's metadata as
+an annotation, on a **runtime-only** copy of the instance (never persisted):
+
+```
+krop.opendefense.cloud/consumer-cluster
+```
+
+Reference it from any template (or `schema.status`) via CEL:
+
+```yaml
+metadata:
+  name: ${schema.metadata.annotations["krop.opendefense.cloud/consumer-cluster"]}-${schema.spec.name}
+```
+
+**Prefix host/provider child names with it for collision-free naming.** Two
+consumers both creating a `HostedDatabase` named `db` yield host Deployments named
+`<clusterA>-db` and `<clusterB>-db` — no collision in the shared `databases`
+namespace.
+
+**Why the cluster name and not the workspace path.** The value is kcp's
+**canonical logical-cluster name** (e.g. `kvdk8299mah3yj1p`), which is **globally
+unique and immutable** — the correct handle for collision-free naming in a shared
+host cluster or provider workspace. It is **not** the human workspace path
+(`root:acme:team`), which is mutable (a workspace can be renamed/moved) and would
+require an extra RBAC-gated lookup to resolve.
+
+**Why an annotation and not a `${workspace.name}` variable.** kro exposes the
+instance to CEL only as the `schema` variable (its `spec` + `metadata`, no
+`status`). A bare new top-level variable would fail kro's build-time validation,
+which does not know about it; `metadata.annotations` is the one CEL-reachable open
+map, so the reconciler injects the value there
+(`internal/engine/workspace.go` `AnnotationConsumerCluster`/`StampConsumerCluster`,
+stamped in `internal/controller/reconciler.go` before the kro runtime is built).
+The same value is also applied to every materialized child as the matching
+`krop.opendefense.cloud/consumer-cluster` **label**, so instance annotation and
+child label always agree.
+
+See the shipped
+[`config/kcp/examples/blueprint-hosteddatabase.yaml`](../config/kcp/examples/blueprint-hosteddatabase.yaml)
+(which prefixes its host Deployment name with the annotation) and
+[decisions/0012-consumer-workspace-info-in-cel.md](decisions/0012-consumer-workspace-info-in-cel.md).
 
 ---
 
@@ -318,70 +375,110 @@ changes, prefer publishing under a new `version`/`kind`.
 
 ## Worked example (annotated)
 
-`test/fixtures/blueprint-kubernetescluster-rgd.yaml` — a `KubernetesCluster` that
-requests an agent (provider-side) and exposes a config (consumer-side) carrying
-the agent's token:
+[`config/kcp/examples/blueprint-hosteddatabase.yaml`](../config/kcp/examples/blueprint-hosteddatabase.yaml)
+— a `HostedDatabase` that spans **all three planes** in one graph: it reads the
+tenant's existing VPC (consumer, read-only), provisions the database workload on
+the provider's host cluster (its name prefixed with the unique consumer-cluster
+annotation), records the tenant→database mapping in the provider workspace, and
+publishes connection details back to the tenant:
 
 ```yaml
 apiVersion: krop.opendefense.cloud/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
-  name: kubernetescluster
+  name: hosteddatabase
 spec:
   schema:
     apiVersion: v1alpha1
-    kind: KubernetesCluster
+    kind: HostedDatabase
     group: krop.opendefense.cloud
     spec:
-      region: string                              # instance input
+      name: string
+      engine: string | default="postgres"      # instance input
     status:
-      configMapName: ${config.metadata.name}      # projection: the consumer child's name
-      agentToken: ${agentRequest.status.token}     # projection: the provider child's live status
+      endpoint: ${connection.data.endpoint}     # projection: the consumer child's data
+      vpcID: ${vpc.status.vpcID}                 # projection: the external-ref's live status
   resources:
-    # (1) PROVIDER-target child: written into the provider workspace by the
+    # (1) CONSUMER-target externalRef: an existing VPC krop READS but never
+    #     creates/GCs; auto-derives a read-only (get,list,watch) permissionClaim.
+    - id: vpc
+      target: consumer
+      externalRef:
+        apiVersion: ec2.services.k8s.aws/v1alpha1
+        kind: VPC
+        metadata:
+          name: ${schema.spec.name}-vpc
+    # (2) HOST-target child: written into the physical host cluster. The name is
+    #     PREFIXED with the consumer's kcp logical-cluster name (globally unique +
+    #     immutable) so two tenants requesting "db" never collide on the host.
+    - id: db
+      target: host
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: ${schema.metadata.annotations["krop.opendefense.cloud/consumer-cluster"]}-${schema.spec.name}
+          namespace: databases
+        spec:
+          replicas: 1
+          selector: { matchLabels: { app: ${schema.spec.name} } }
+          template:
+            metadata: { labels: { app: ${schema.spec.name} } }
+            spec:
+              containers:
+                - name: db
+                  image: ${schema.spec.engine}:16
+                  env:
+                    - name: VPC_ID
+                      value: ${vpc.status.vpcID}    # consumer read → host write
+    # (3) PROVIDER-target child: tenant→database inventory record, written with the
     #     controller's own identity; renamed collision-free; no permissionClaim.
-    - id: agentRequest
+    - id: registration
       target: provider
       template:
-        apiVersion: fulfil.krop.opendefense.cloud/v1alpha1
-        kind: AgentRequest
+        apiVersion: v1
+        kind: ConfigMap
         metadata:
-          name: ${schema.spec.region}-agent
+          name: ${schema.spec.name}-registration
           namespace: default
-        spec:
-          region: ${schema.spec.region}
-    # (2) CONSUMER-target child (default): written into the consumer workspace
-    #     through the APIExport vw, authorized by the accepted `configmaps` claim.
-    #     Reads the PROVIDER child's status cross-target → PENDS until it is set.
-    - id: config
+        data:
+          consumerCluster: ${schema.metadata.annotations["krop.opendefense.cloud/consumer-cluster"]}
+          engine: ${schema.spec.engine}
+    # (4) CONSUMER-target child (default): connection details published back to the
+    #     tenant through the APIExport vw, authorized by the accepted `configmaps`
+    #     claim. Funnels the host Deployment name (host → consumer cross-target CEL).
+    - id: connection
       target: consumer
       template:
         apiVersion: v1
         kind: ConfigMap
         metadata:
-          name: ${schema.spec.region}-cluster-config
+          name: ${schema.spec.name}-connection
           namespace: default
         data:
-          region: ${schema.spec.region}
-          token: ${agentRequest.status.token}       # cross-target CEL read
+          endpoint: ${db.metadata.name}.databases.svc.cluster.local   # host → consumer CEL
+          vpcID: ${vpc.status.vpcID}
 ```
 
 Publishing this blueprint yields:
 
-- an `APIExport` named `kubernetesclusters.krop.opendefense.cloud` serving the
-  `KubernetesCluster` kind,
-- one auto-derived `configmaps` permissionClaim (the only foreign consumer-target
-  GroupResource; `AgentRequest` is provider-target, so it needs **no** claim — it
-  needs provider-workspace RBAC instead, which the operator grants),
-- and, per instance, an `AgentRequest` in the provider workspace + a `ConfigMap`
-  in the consumer workspace once the token is set.
+- an `APIExport` named `hosteddatabases.krop.opendefense.cloud` serving the
+  `HostedDatabase` kind,
+- auto-derived permissionClaims from its **consumer-target** nodes: a read-only
+  (`get,list,watch`) claim for the foreign `ec2.services.k8s.aws/VPC` external ref
+  and a full-CRUD `configmaps` claim for the consumer `connection` ConfigMap. The
+  host `db` Deployment and the provider `registration` ConfigMap are in the
+  controller's own ownership domain, so they need **no** claim,
+- and, per instance, a host-cluster `Deployment`, a provider-workspace `ConfigMap`,
+  and a consumer-workspace `ConfigMap` once the VPC and Deployment name resolve.
 
 ### What the operator must do for *your* blueprint
 
 Every provider-target GVK your blueprint emits needs a matching rule in the
-provider-workspace RBAC (`config/kcp/rbac/provider-rbac.yaml`) — the shipped rule
-only covers this example's `AgentRequest`. Never widen it to `*`/`*`. See
-[operations.md](operations.md#rbac--identity) and
+provider-workspace RBAC (`config/kcp/rbac/provider-rbac.yaml`). This example's
+provider child is a core `ConfigMap` (`registration`), already covered by the
+required `configmaps` rule; a foreign provider-target GVK would need its own rule.
+Never widen it to `*`/`*`. See [operations.md](operations.md#rbac--identity) and
 [permissions.md](permissions.md).
 
 ---

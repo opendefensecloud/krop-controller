@@ -91,13 +91,15 @@ Everything the controller does in the provider workspace it does as
   (`internal/controller/reconciler.go`), with the controller's own identity —
   the same ownership domain, so **no permissionClaim is involved** (design §9).
   These GVKs are defined by the operator's blueprints and are not knowable at
-  chart-install time. `provider-rbac.yaml` ships an **example** rule matching
-  krop's example blueprint
-  (`config/kcp/examples/blueprint-kubernetescluster.yaml`), which emits a
-  `fulfil.krop.opendefense.cloud/AgentRequest`. Operators **must** replace/extend
-  this with the exact provider-target GVKs their blueprints emit. **Do not** use
-  a `*`/`*` wildcard — that re-creates the broad grant this model exists to
-  remove.
+  chart-install time. krop's shipped example blueprint
+  (`config/kcp/examples/blueprint-hosteddatabase.yaml`) targets a core `ConfigMap`
+  (`registration`) at the provider, which is **already covered** by the required
+  `configmaps` rule — so it needs no extra provider-target rule. `provider-rbac.yaml`
+  additionally ships a **generic** example rule (a `fulfil.krop.opendefense.cloud`
+  GVK) illustrating the shape a foreign provider-target type needs. Operators
+  **must** replace/extend it with the exact provider-target GVKs their own
+  blueprints emit. **Do not** use a `*`/`*` wildcard — that re-creates the broad
+  grant this model exists to remove.
 - **Liveness records + orphan sweep (design §11)** — provider-target children
   orphan if a consumer unbinds the APIExport mid-life: the instance reconciler
   stops running for that logical cluster, so its finalizer never fires. To recover,

@@ -7,8 +7,9 @@ appear. Nothing pends, nothing crosses to the provider workspace: just the core
 loop, explained piece by piece.
 
 This is deliberately simpler than the worked
-[`KubernetesCluster` example](../blueprints.md#worked-example-annotated). Once it
-clicks, read the full [authoring reference](../blueprints.md) and then the
+[`HostedDatabase` example](../blueprints.md#worked-example-annotated) (which spans
+all three planes). Once it clicks, read the full
+[authoring reference](../blueprints.md) and then the
 [cross-target dependencies guide](cross-target-dependencies.md).
 
 **Prerequisites.** A running krop-controller pinned to a provider workspace, and a
@@ -192,6 +193,10 @@ kubectl --context ${CONSUMER_WORKSPACE} -n default get configmap eu-config   # -
 
 - Add a **second child** and route it to the provider workspace, then feed its
   status into this one: [cross-target dependencies](cross-target-dependencies.md).
+- Route a child to the **host** cluster (or provider workspace) and make its name
+  collision-free across tenants by prefixing it with the consumer-cluster
+  annotation — `${schema.metadata.annotations["krop.opendefense.cloud/consumer-cluster"]}`:
+  [consumer workspace info in CEL](../blueprints.md#consumer-workspace-info-in-cel).
 - The full authoring surface — `readyWhen`/`includeWhen`/`forEach`, provider-child
   naming, pruning, schema evolution: [blueprints.md](../blueprints.md).
 - How publication, dual-target apply, and GC actually work:

@@ -330,6 +330,15 @@ before the consumer child's dependency resolves, and that provider child needs a
 liveness record immediately in case the consumer unbinds during the pending
 window. Only prune is gated on `Complete`.
 
+Before building the kro runtime, the reconciler also **stamps the consumer's kcp
+logical-cluster name** (globally unique + immutable) onto a runtime-only copy of the
+instance as the `krop.opendefense.cloud/consumer-cluster` annotation
+(`internal/engine/workspace.go`), so blueprint CEL can reference it via
+`${schema.metadata.annotations["krop.opendefense.cloud/consumer-cluster"]}` to derive
+collision-free host/provider child names. The stamp is never persisted — only the
+pristine instance is status-updated. See
+[decisions/0012-consumer-workspace-info-in-cel.md](decisions/0012-consumer-workspace-info-in-cel.md).
+
 ### 4.3 Garbage collection
 
 Two paths. The normal path is the instance finalizer; the safety net is the
