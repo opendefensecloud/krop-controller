@@ -2,7 +2,7 @@
 
 # -- Image configuration for krop-controller
 image:
-  repository: ghcr.io/opendefense/krop-controller
+  repository: ghcr.io/opendefensecloud/krop-controller
   # -- Overrides the image tag (default is the chart appVersion)
   tag: ""
   pullPolicy: IfNotPresent

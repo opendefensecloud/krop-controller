@@ -96,11 +96,11 @@ jobs:
 
           # Push to OCI registry
           PACKAGE=$(ls krop-controller-[0-9]*.tgz)
-          helm push "${PACKAGE}" oci://ghcr.io/opendefense/charts &> push-metadata.txt
-          echo "Published ${PACKAGE} to ghcr.io/opendefense/charts"
+          helm push "${PACKAGE}" oci://ghcr.io/opendefensecloud/charts &> push-metadata.txt
+          echo "Published ${PACKAGE} to ghcr.io/opendefensecloud/charts"
           CHART_DIGEST=$(awk '/Digest: /{print $2}' push-metadata.txt)
           echo "CHART_DIGEST=${CHART_DIGEST}" | tee -a $GITHUB_ENV
 
-          cosign sign --yes "ghcr.io/opendefense/charts/krop-controller@${CHART_DIGEST}"
+          cosign sign --yes "ghcr.io/opendefensecloud/charts/krop-controller@${CHART_DIGEST}"
 
           rm -f "${PACKAGE}"

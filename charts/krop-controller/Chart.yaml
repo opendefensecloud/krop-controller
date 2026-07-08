@@ -10,7 +10,7 @@ version: 0.1.0
 appVersion: "latest"
 home: https://opendefense.cloud
 sources:
-  - https://github.com/opendefense/krop-controller
+  - https://github.com/opendefensecloud/krop-controller
 maintainers:
   - name: ODD Team
     email: odd@opendefense.cloud
