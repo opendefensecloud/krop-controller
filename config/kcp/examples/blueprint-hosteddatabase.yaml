@@ -1,0 +1,97 @@
+# config/kcp/examples/blueprint-hosteddatabase.yaml
+#
+# A provider-authored blueprint that spans ALL THREE planes in one graph:
+#
+#   - reads an existing VPC in the CONSUMER workspace (externalRef, read-only),
+#   - provisions the database workload on the provider's HOST cluster, its name
+#     prefixed with the unique consumer workspace so tenants never collide,
+#   - records the tenant->database mapping in the PROVIDER workspace,
+#   - publishes connection details back into the CONSUMER workspace.
+#
+# Apply it into the provider workspace; krop publishes it as a bindable APIExport.
+# A consumer then binds the export and creates HostedDatabase instances.
+apiVersion: krop.opendefense.cloud/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: hosteddatabase
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: HostedDatabase
+    group: krop.opendefense.cloud
+    spec:
+      name: string
+      engine: string | default="postgres"
+    status:
+      # Projected from children across the consumer + host planes (cross-target CEL).
+      endpoint: ${connection.data.endpoint}
+      vpcID: ${vpc.status.vpcID}
+
+  resources:
+    # 1. READ the consumer's existing VPC. externalRef = read-only: krop never
+    #    creates or deletes it, and auto-derives a get/list/watch permissionClaim
+    #    so the consumer's APIBinding authorizes the read through the vw.
+    - id: vpc
+      target: consumer
+      externalRef:
+        apiVersion: ec2.services.k8s.aws/v1alpha1
+        kind: VPC
+        metadata:
+          name: ${schema.spec.name}-vpc
+
+    # 2. PROVISION the database on the provider's HOST cluster. The child name is
+    #    prefixed with the consumer's kcp logical-cluster name (globally unique +
+    #    immutable), so two consumers requesting "db" never collide on the host.
+    - id: db
+      target: host
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: ${schema.metadata.annotations["krop.opendefense.cloud/consumer-cluster"]}-${schema.spec.name}
+          namespace: databases
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: ${schema.spec.name}
+          template:
+            metadata:
+              labels:
+                app: ${schema.spec.name}
+            spec:
+              containers:
+                - name: db
+                  image: ${schema.spec.engine}:16
+                  env:
+                    # A value funneled from the consumer-plane externalRef read.
+                    - name: VPC_ID
+                      value: ${vpc.status.vpcID}
+
+    # 3. RECORD the tenant->database mapping in the PROVIDER workspace (inventory /
+    #    billing). Written with krop's own identity — no permissionClaim needed.
+    - id: registration
+      target: provider
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${schema.spec.name}-registration
+          namespace: default
+        data:
+          consumerCluster: ${schema.metadata.annotations["krop.opendefense.cloud/consumer-cluster"]}
+          engine: ${schema.spec.engine}
+
+    # 4. PUBLISH connection details back into the CONSUMER workspace, funneling the
+    #    host Deployment name (host -> consumer cross-target CEL) and the VPC id.
+    - id: connection
+      target: consumer
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${schema.spec.name}-connection
+          namespace: default
+        data:
+          endpoint: ${db.metadata.name}.databases.svc.cluster.local
+          vpcID: ${vpc.status.vpcID}

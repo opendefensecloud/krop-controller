@@ -135,7 +135,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 		return kropengine.Result{}, nil
 	}
 
-	rt, err := kroruntime.FromGraph(r.Graph, inst, krograph.RGDConfig{
+	// Expose the consumer workspace identity to blueprint CEL: stamp the kcp
+	// logical-cluster name (globally unique + immutable — see req.ClusterName) onto
+	// a RUNTIME-ONLY copy of the instance as an annotation, so blueprints can derive
+	// collision-free host/provider child names via
+	// ${schema.metadata.annotations["krop.opendefense.cloud/consumer-cluster"]}.
+	// The copy is never persisted: only the pristine inst is Status().Update'd below.
+	runtimeInst := inst.DeepCopy()
+	kropengine.StampConsumerCluster(runtimeInst, clusterName)
+
+	rt, err := kroruntime.FromGraph(r.Graph, runtimeInst, krograph.RGDConfig{
 		MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000,
 	})
 	if err != nil {
