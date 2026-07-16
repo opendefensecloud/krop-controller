@@ -4,7 +4,7 @@
 image:
   repository: ghcr.io/opendefensecloud/krop-controller
   # -- Overrides the image tag (default is the chart appVersion)
-  tag: ""
+  tag: "@sha256:75bd8b3195cfa1ebc483cf45e78650eda24264583ca150fa0d4320efbb744f54"
   pullPolicy: IfNotPresent
 
 # -- Image pull secrets (list of secret names)
