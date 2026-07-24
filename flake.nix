@@ -24,7 +24,7 @@
       {
         devShells.default = dev-kit.lib.mkShell {
           inherit system;
-          goVersion = "1.26.4";
+          goVersion = "1.26.5";
           # Private module host: skip the public proxy/sumdb for our GitLab modules.
           env.GOPRIVATE = "gitlab.opendefense.cloud";
         };
