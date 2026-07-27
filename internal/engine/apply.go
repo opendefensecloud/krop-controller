@@ -58,17 +58,22 @@ func NewRecordingApplier(inner Applier, sink *[]ChildID) *RecordingApplier {
 	return &RecordingApplier{inner: inner, applied: sink}
 }
 
-// Apply records obj's final identity, then delegates to inner and returns its
-// result. The name is already final at this point (QualifyingApplier renames
+// Apply delegates to inner and then records obj's final identity and returns its result.
+// The name is already final at this point (QualifyingApplier renames
 // before delegating to its inner), so recording before delegating is correct.
 func (r *RecordingApplier) Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	observed, err := r.inner.Apply(ctx, obj)
+	if err != nil {
+		return observed, err
+	}
+
 	*r.applied = append(*r.applied, ChildID{
-		GVK:       obj.GroupVersionKind(),
-		Namespace: obj.GetNamespace(),
-		Name:      obj.GetName(),
+		GVK:       observed.GroupVersionKind(),
+		Namespace: observed.GetNamespace(),
+		Name:      observed.GetName(),
 	})
 
-	return r.inner.Apply(ctx, obj)
+	return observed, nil
 }
 
 // SSAApplier applies objects into one workspace via server-side apply using a

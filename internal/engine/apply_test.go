@@ -160,6 +160,37 @@ func TestRecordingApplier_RecordsFinalIdentity(t *testing.T) {
 	}
 }
 
+func TestRecordingApplier_RecordsServerObservedIdentity(t *testing.T) {
+	inner := &fakeApplier{mutate: func(o *unstructured.Unstructured) {
+		o.SetNamespace("default") // server-side namespace defaulting
+	}}
+	var sink []ChildID
+	rec := NewRecordingApplier(inner, &sink)
+
+	desired := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": "cfg"}, // no namespace set
+	}}
+	observed, err := rec.Apply(context.Background(), desired)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(sink) != 1 {
+		t.Fatalf("recorded %d ChildIDs, want 1", len(sink))
+	}
+	// keep-set entry must match what pruneChildren's List returns: the server object.
+	want := ChildID{
+		GVK:       observed.GroupVersionKind(),
+		Namespace: observed.GetNamespace(),
+		Name:      observed.GetName(),
+	}
+	if sink[0] != want {
+		t.Fatalf("recorded ChildID = %+v, want server-observed %+v; "+
+			"prune keep-set built from desired identity will not match the listed child",
+			sink[0], want)
+	}
+}
+
 func TestOwnerRefApplier_StampsInstanceOwner(t *testing.T) {
 	inner := &fakeApplier{}
 	owner := &unstructured.Unstructured{Object: map[string]any{
