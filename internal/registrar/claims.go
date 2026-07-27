@@ -15,12 +15,15 @@
 package registrar
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"sort"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	"github.com/kubernetes-sigs/kro/pkg/graph"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 )
@@ -54,6 +57,33 @@ func DeriveClaims(foreign []schema.GroupResource, verbs []string, identity map[s
 	}
 
 	return claims
+}
+
+// mergeClaims merges multiple claim sets and combines the verbs for matching GR.
+func mergeClaims(inputs ...[]apisv1alpha2.PermissionClaim) []apisv1alpha2.PermissionClaim {
+	var all []apisv1alpha2.PermissionClaim
+	for _, in := range inputs {
+		all = append(all, in...)
+	}
+	slices.SortStableFunc(all, func(i, j apisv1alpha2.PermissionClaim) int {
+		if g := cmp.Compare(i.Group, j.Group); g != 0 {
+			return g
+		}
+
+		return cmp.Compare(i.Resource, j.Resource)
+	})
+
+	out := []apisv1alpha2.PermissionClaim{all[0]}
+	for _, in := range all {
+		last := out[len(out)-1]
+		if last.GroupResource != in.GroupResource {
+			out = append(out, in)
+			continue
+		}
+		last.Verbs = sets.List(sets.New(append(last.Verbs, in.Verbs...)...))
+	}
+
+	return out
 }
 
 // validateClaims rejects any foreign (non-core) permissionClaim whose identity

@@ -52,6 +52,48 @@ func TestDeriveClaims_CoreAndForeign(t *testing.T) {
 	}
 }
 
+func TestMergeClaims(t *testing.T) {
+	gr := func(g, r string) apisv1alpha2.GroupResource {
+		return apisv1alpha2.GroupResource{Group: g, Resource: r}
+	}
+	claim := func(g, r string, verbs ...string) apisv1alpha2.PermissionClaim {
+		return apisv1alpha2.PermissionClaim{GroupResource: gr(g, r), Verbs: verbs}
+	}
+
+	writable := []apisv1alpha2.PermissionClaim{
+		claim("b.example", "widgets", "get", "create"),
+		claim("access.opendefense.cloud", "scopes", "get", "create"),
+	}
+	external := []apisv1alpha2.PermissionClaim{
+		claim("access.opendefense.cloud", "scopes", "get"), // overlaps writable
+		claim("", "configmaps", "get"),
+	}
+
+	got := mergeClaims(writable, external)
+
+	wantGRs := []apisv1alpha2.GroupResource{
+		gr("", "configmaps"),
+		gr("access.opendefense.cloud", "scopes"),
+		gr("b.example", "widgets"),
+	}
+	gotGRs := make([]apisv1alpha2.GroupResource, len(got))
+	for i, c := range got {
+		gotGRs[i] = c.GroupResource
+	}
+	if !reflect.DeepEqual(gotGRs, wantGRs) {
+		t.Fatalf("order = %+v, want %+v", gotGRs, wantGRs)
+	}
+
+	// Overlapping GR keeps the writable (superset) verbs, not the read-only ones.
+	for _, c := range got {
+		if c.Group == "access.opendefense.cloud" && c.Resource == "scopes" {
+			if !reflect.DeepEqual(c.Verbs, []string{"get", "create"}) {
+				t.Fatalf("scopes verbs = %v, want writable superset [get create]", c.Verbs)
+			}
+		}
+	}
+}
+
 func TestValidateClaims(t *testing.T) {
 	tests := []struct {
 		name    string
