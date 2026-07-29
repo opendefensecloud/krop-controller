@@ -1,57 +1,72 @@
 name-template: "$RESOLVED_VERSION"
 tag-template: "$RESOLVED_VERSION"
+version-template: "v$MAJOR.$MINOR.$PATCH"
+
+# Labels are applied by hand, so every category below is opt-in. Pull requests
+# without a matching label are still listed, just without a section heading —
+# their conventional-commit title prefix already says what they are.
 categories:
+  # `when` replaces the deprecated `categories[*].labels` field.
   - title: "Features"
-    labels:
-      - "feat"
-      - "feature"
-      - "enhancement"
+    when:
+      labels:
+        - "feat"
+        - "feature"
+        - "enhancement"
   - title: "Bug Fixes"
-    labels:
-      - "fix"
-      - "bugfix"
-      - "bug"
+    when:
+      labels:
+        - "fix"
+        - "bugfix"
+        - "bug"
   - title: "Maintenance"
-    labels:
-      - "docs"
-      - "doc"
-      - "chore"
+    when:
+      labels:
+        - "docs"
+        - "doc"
+        - "documentation"
+        - "chore"
+
+  # `type: pre-exclude` replaces the deprecated top-level `exclude-labels`.
+  - title: "Excluded"
+    type: pre-exclude
+    when:
+      labels:
+        - "skip-changelog"
+
+  # `type: version-resolver` categories replace the deprecated top-level
+  # `version-resolver` block. No category matching means no increment is
+  # contributed, and the drafter falls back to patch — same as the previous
+  # `version-resolver.default: patch`.
+  - title: "Major Version"
+    type: version-resolver
+    semver-increment: major
+    when:
+      labels:
+        - "major"
+  - title: "Minor Version"
+    type: version-resolver
+    semver-increment: minor
+    when:
+      labels:
+        - "minor"
+  - title: "Patch Version"
+    type: version-resolver
+    semver-increment: patch
+    when:
+      labels:
+        - "patch"
+
 change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
 change-title-escapes: '\<*_&' # You can add # and @ to disable mentions, and add ` to disable code blocks.
-version-template: "v$MAJOR.$MINOR.$PATCH"
-version-resolver:
-  major:
-    labels:
-      - "major"
-  minor:
-    labels:
-      - "minor"
-  patch:
-    labels:
-      - "patch"
-  default: patch
-exclude-labels:
-  - "skip-changelog"
-autolabeler:
-  - label: "chore"
-    files:
-      - "*.md"
-    branch:
-      - '/docs{0,1}\/.+/'
-  - label: "bug"
-    branch:
-      - '/fix\/.+/'
-      - '/bug\/.+/'
-      - '/bugfix\/.+/'
-    title:
-      - "/fix/i"
-      - "/bug/i"
-      - "/bugfix/i"
-  - label: "feature"
-    branch:
-      - '/feat\/.+/'
-      - '/feature\/.+/'
-      - '/enhancement\/.+/'
+
+# Sorting by title groups entries by their conventional-commit type prefix,
+# which stands in for the section headings we get no longer, now that nothing
+# labels pull requests automatically. Descending is deliberate, not just the
+# default: it puts fix and feat above docs, ci and chore.
+sort-by: title
+sort-direction: descending
+
 template: |
   ## Changes
 
