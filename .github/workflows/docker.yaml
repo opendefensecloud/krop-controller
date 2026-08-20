@@ -117,6 +117,10 @@ jobs:
           upload-release-assets: false # we use immutable releases
       # actions/attest picks the attestation type from its inputs: sbom-path
       # yields an SBOM attestation, its absence a SLSA build provenance one.
+      # create-storage-record only feeds the org Linked Artifacts page, which
+      # we dont use. It defaults to true whenever push-to-registry is set and
+      # has only ever failed here with "no artifacts found", so turn it off
+      # rather than keep two bogus warnings per build.
       - name: Attest SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
@@ -124,9 +128,11 @@ jobs:
           subject-digest: ${{ steps.image.outputs.digest }}
           sbom-path: 'sbom.cyclonedx.json'
           push-to-registry: true
+          create-storage-record: false
       - name: Attest provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ghcr.io/opendefensecloud/krop-controller
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true
+          create-storage-record: false
