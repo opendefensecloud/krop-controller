@@ -59,7 +59,9 @@ jobs:
           find bin -type f ! -name checksums.txt | sort | xargs sha256sum > bin/checksums.txt
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        # actions/attest defaults to SLSA build provenance when no sbom-path or
+        # predicate input is given.
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: 'bin/krop-controller-*' # binaries only; runs before signing so bundles are not yet present
 

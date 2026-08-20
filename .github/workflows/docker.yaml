@@ -115,15 +115,17 @@ jobs:
           format: 'cyclonedx-json'
           output-file: 'sbom.cyclonedx.json'
           upload-release-assets: false # we use immutable releases
+      # actions/attest picks the attestation type from its inputs: sbom-path
+      # yields an SBOM attestation, its absence a SLSA build provenance one.
       - name: Attest SBOM
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ghcr.io/opendefensecloud/krop-controller
           subject-digest: ${{ steps.image.outputs.digest }}
           sbom-path: 'sbom.cyclonedx.json'
           push-to-registry: true
       - name: Attest provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ghcr.io/opendefensecloud/krop-controller
           subject-digest: ${{ steps.image.outputs.digest }}
