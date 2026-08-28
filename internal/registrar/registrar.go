@@ -178,9 +178,9 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 	// Consumer-target template nodes get full CRUD claims (the engine writes them);
 	// consumer-target external refs get read-only claims (the engine only reads them).
 	writableGRs, externalGRs := ForeignConsumerGRs(g, instanceGR, routing)
-	claims := append(
+	claims := mergeClaims(
 		DeriveClaims(writableGRs, claimVerbs, identity),
-		DeriveClaims(externalGRs, readOnlyVerbs, identity)...,
+		DeriveClaims(externalGRs, readOnlyVerbs, identity),
 	)
 	// A foreign (non-core) claim with no identityHash would not authorize: the
 	// owning APIExport isn't bound in the provider workspace yet. Fail the publish
