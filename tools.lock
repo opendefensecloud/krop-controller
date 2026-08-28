@@ -1,5 +1,5 @@
 addlicense github.com/google/addlicense@v1.2.0
-apigen github.com/kcp-dev/sdk/cmd/apigen@v0.32.2
+apigen github.com/kcp-dev/sdk/cmd/apigen@v0.32.3
 controller-gen sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.0
 ginkgo github.com/onsi/ginkgo/v2/ginkgo@v2.32.0
 golangci-lint github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
