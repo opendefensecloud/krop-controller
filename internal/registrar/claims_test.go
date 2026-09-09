@@ -84,13 +84,56 @@ func TestMergeClaims(t *testing.T) {
 		t.Fatalf("order = %+v, want %+v", gotGRs, wantGRs)
 	}
 
-	// Overlapping GR keeps the writable (superset) verbs, not the read-only ones.
+	// Overlapping GR carries the UNION of both verb sets, sorted — here the
+	// read-only verbs are a subset of the writable ones, so the union is just the
+	// writable set, emitted in sorted order for stable publications.
 	for _, c := range got {
 		if c.Group == "access.opendefense.cloud" && c.Resource == "scopes" {
-			if !reflect.DeepEqual(c.Verbs, []string{"get", "create"}) {
-				t.Fatalf("scopes verbs = %v, want writable superset [get create]", c.Verbs)
+			if !reflect.DeepEqual(c.Verbs, []string{"create", "get"}) {
+				t.Fatalf("scopes verbs = %v, want the sorted union [create get]", c.Verbs)
 			}
 		}
+	}
+}
+
+// A blueprint whose resources are ALL host- or provider-target derives no
+// consumer claims at all, so mergeClaims is called with nothing. It must return
+// an empty set rather than indexing element zero of an empty slice — that panic
+// takes down the registrar before it can even record a Ready condition.
+func TestMergeClaims_NoClaimsIsEmptyNotPanic(t *testing.T) {
+	got := mergeClaims(nil, nil)
+	if len(got) != 0 {
+		t.Fatalf("mergeClaims(nil, nil) = %+v, want empty", got)
+	}
+
+	// The same via the real shape: DeriveClaims over empty GR sets.
+	got = mergeClaims(
+		DeriveClaims(nil, claimVerbs, nil),
+		DeriveClaims(nil, readOnlyVerbs, nil),
+	)
+	if len(got) != 0 {
+		t.Fatalf("mergeClaims over empty derived sets = %+v, want empty", got)
+	}
+}
+
+// The existing merge test cannot detect a lost union: its read-only verbs are a
+// SUBSET of its writable ones, so dropping the merge looks identical to doing it.
+// Disjoint verb sets tell the two apart.
+func TestMergeClaims_UnionsDisjointVerbs(t *testing.T) {
+	c := func(verbs ...string) apisv1alpha2.PermissionClaim {
+		return apisv1alpha2.PermissionClaim{
+			GroupResource: apisv1alpha2.GroupResource{Group: "b.example", Resource: "widgets"},
+			Verbs:         verbs,
+		}
+	}
+
+	got := mergeClaims([]apisv1alpha2.PermissionClaim{c("create")}, []apisv1alpha2.PermissionClaim{c("list")})
+
+	if len(got) != 1 {
+		t.Fatalf("merged into %d claims, want 1: %+v", len(got), got)
+	}
+	if !reflect.DeepEqual(got[0].Verbs, []string{"create", "list"}) {
+		t.Fatalf("verbs = %v, want the union [create list]", got[0].Verbs)
 	}
 }
 

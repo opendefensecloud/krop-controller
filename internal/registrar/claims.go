@@ -60,10 +60,18 @@ func DeriveClaims(foreign []schema.GroupResource, verbs []string, identity map[s
 }
 
 // mergeClaims merges multiple claim sets and combines the verbs for matching GR.
+//
+// Returns nil when there is nothing to merge: a blueprint whose resources are all
+// host- or provider-target derives NO consumer claims, and seeding the output with
+// element zero of an empty slice panics the registrar before it can so much as
+// record a Ready condition.
 func mergeClaims(inputs ...[]apisv1alpha2.PermissionClaim) []apisv1alpha2.PermissionClaim {
 	var all []apisv1alpha2.PermissionClaim
 	for _, in := range inputs {
 		all = append(all, in...)
+	}
+	if len(all) == 0 {
+		return nil
 	}
 	slices.SortStableFunc(all, func(i, j apisv1alpha2.PermissionClaim) int {
 		if g := cmp.Compare(i.Group, j.Group); g != 0 {
@@ -73,14 +81,23 @@ func mergeClaims(inputs ...[]apisv1alpha2.PermissionClaim) []apisv1alpha2.Permis
 		return cmp.Compare(i.Resource, j.Resource)
 	})
 
+	// Seed with the first claim and fold the REST into it: ranging over all would
+	// re-process the seed against itself.
 	out := []apisv1alpha2.PermissionClaim{all[0]}
-	for _, in := range all {
-		last := out[len(out)-1]
+	for _, in := range all[1:] {
+		// Take a POINTER to the accumulator: merging into a copy silently discards
+		// the union, which is invisible whenever one verb set happens to contain
+		// the other (as claimVerbs does readOnlyVerbs).
+		last := &out[len(out)-1]
 		if last.GroupResource != in.GroupResource {
 			out = append(out, in)
 			continue
 		}
-		last.Verbs = sets.List(sets.New(append(last.Verbs, in.Verbs...)...))
+		// Build the union without appending to last.Verbs, whose backing array may
+		// be the shared package-level claimVerbs/readOnlyVerbs slice.
+		verbs := sets.New(last.Verbs...)
+		verbs.Insert(in.Verbs...)
+		last.Verbs = sets.List(verbs)
 	}
 
 	return out
