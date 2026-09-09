@@ -62,7 +62,10 @@ type Registrar struct {
 	// the wiring can restart the manager only when the compiled graph changed.
 	// routing is the resource-id → target map extracted from the blueprint spec
 	// (empty targets default to consumer downstream). May be nil.
-	OnPublished func(exportName string, instanceGVK schema.GroupVersionKind, g *graph.Graph, routing map[string]kropengine.Target, changed bool)
+	// naming is the resource-id → derived-name constraints map, for resources that
+	// declare one; resources absent from it get the Kubernetes form. May be nil.
+	OnPublished func(exportName string, instanceGVK schema.GroupVersionKind, g *graph.Graph,
+		routing map[string]kropengine.Target, naming map[string]kropengine.NameConstraints, changed bool)
 	// OnDeleted is called during finalizer-based teardown of a deleted blueprint so
 	// the supervisor can stop the export's instance manager. May be nil.
 	OnDeleted func(exportName string)
@@ -162,6 +165,14 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 		routing[id] = t
 	}
 
+	// Per-resource naming constraints (issue #30). Validated here rather than at
+	// apply time so an unsatisfiable combination fails the PUBLISH — visible in the
+	// blueprint's Ready condition — instead of surfacing per-instance much later.
+	naming, nerr := NamingConstraints(bp.Spec)
+	if nerr != nil {
+		return r.fail(ctx, bp, "InvalidNaming", nerr)
+	}
+
 	instanceGR := g.Instance.Meta.GVR.GroupResource()
 	ars, err := BuildARS(g, specHash)
 	if err != nil {
@@ -201,7 +212,7 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 		Kind:    ars.Spec.Names.Kind,
 	}
 	if r.OnPublished != nil {
-		r.OnPublished(exportName, instanceGVK, g, routing, changed)
+		r.OnPublished(exportName, instanceGVK, g, routing, naming, changed)
 	}
 
 	// Re-Get the published APIExport to observe status.identityHash, which kcp

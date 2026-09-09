@@ -6,7 +6,7 @@ spec:
   resources:
   - group: krop.opendefense.cloud
     name: resourcegraphdefinitions
-    schema: v260708-b80061e.resourcegraphdefinitions.krop.opendefense.cloud
+    schema: v260909-d9b85f3.resourcegraphdefinitions.krop.opendefense.cloud
     storage:
       crd: {}
 status: {}

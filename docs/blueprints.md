@@ -268,16 +268,17 @@ and [permissions.md](permissions.md#the-permissionclaims-spine).
 
 ---
 
-## Provider-child naming (collision-free)
+## Qualified-child naming (collision-free)
 
-Many consumers' provider-target children land in **one** provider workspace, so
-krop cannot use the template's literal `metadata.name` — two tenants both creating
-`eu-agent` would collide. Instead every provider-target child is renamed
-deterministically to `<cluster>-<instance>-<originalName>-<hash>`, where the hash
-is a short SHA-256 of the null-joined `(consumerCluster, instanceName,
-originalName)` tuple, truncated to fit 253 chars (`internal/engine/naming.go`).
-The rename is collision-free across consumers and stable across reconciles, so the
-same instance always addresses the same provider child.
+Many consumers' children land in **one** provider workspace or **one** host
+cluster, so krop cannot use the template's literal `metadata.name` — two tenants
+both creating `eu-agent` would collide. Every **provider**- and **host**-target
+child is therefore renamed deterministically to
+`<cluster>-<instance>-<originalName>-<hash>`, where the hash is a short SHA-256 of
+the null-joined `(consumerCluster, instanceName, originalName)` tuple, truncated
+to fit 253 chars (`internal/engine/naming.go`). The rename is collision-free
+across consumers and stable across reconciles, so the same instance always
+addresses the same child.
 
 Consumer-target children keep their literal name — they live in the consumer's own
 workspace, so there is no cross-tenant collision.
@@ -286,14 +287,58 @@ workspace, so there is no cross-tenant collision.
 > against the live renamed object; you reference the node by its `id`, not its
 > on-cluster name.
 
+### Constraining the derived name
+
+That default name is a DNS subdomain up to 253 characters that may start with a
+digit, because kcp logical-cluster names often do (`231cyw14qhtl611l`). Some APIs
+are stricter, and reject it: Google Cloud caps names at **30 characters**, and
+RFC1123 **label** types require an **alphabetic first character**. A child of such
+a type is admitted nowhere and the instance never converges.
+
+Declare a `naming` block on the resource to fit the target's rules:
+
+```yaml
+resources:
+  - id: gdcaProject
+    target: host
+    naming:
+      maxLength: 30   # 16..253; omit for the Kubernetes ceiling
+      prefix: p       # prepended as "p-", guaranteeing a letter first
+    template:
+      apiVersion: resourcemanager.global.gdc.goog/v1
+      kind: Project
+      metadata:
+        name: ${schema.spec.name}
+        namespace: platform
+```
+
+which yields, for example, `p-231cyw14qhtl6-3b99694a88e4` (29 characters).
+
+**The content hash always survives.** Only the readable middle is truncated, so a
+constrained name is exactly as collision-free as an unconstrained one — it is just
+less legible. The `consumer-cluster`, `blueprint` and `instance-uid` labels krop
+stamps on every child carry the provenance that the name no longer spells out, so
+`kubectl get <kind> -l krop.opendefense.cloud/consumer-cluster=<name>` still finds
+a tenant's children.
+
+Both fields are optional and independent: `prefix` alone fixes a letter-start
+requirement at full length, `maxLength` alone fits a short ceiling. `naming` is
+ignored for consumer-target resources, which keep their template name.
+
+A combination that leaves no room for even one readable character — `maxLength:
+15` with a one-character prefix, once the 12-character hash and its separators are
+taken — is rejected when the blueprint is **published**, with `Ready=False` and
+`Reason: InvalidNaming`, rather than surfacing later per instance.
+
 ---
 
 ## Consumer workspace info in CEL
 
-krop renames **provider**-target children automatically (above), but **host**- and
-**consumer**-target children keep their template `metadata.name`. When many tenants
-share one host cluster (or provider namespace), a literal name like `db` would
-collide. To let a blueprint build collision-free names itself, the reconciler
+krop renames **provider**- and **host**-target children automatically (above);
+**consumer**-target children keep their template `metadata.name`. A blueprint may
+still want to shape a name itself — to make a child's owner legible on a shared
+host, or to build a consumer-target name that is unique for other reasons. To let
+it do so, the reconciler
 stamps the **consumer's kcp logical-cluster name** onto each instance's metadata as
 an annotation, on a **runtime-only** copy of the instance (never persisted):
 

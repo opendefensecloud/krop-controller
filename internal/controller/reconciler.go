@@ -81,6 +81,10 @@ type Reconciler struct {
 	// default to consumer). Populated on publish from the wrapper spec's ToKro.
 	// Not yet consumed by the engine (annotation-based routing remains this task).
 	Routing map[string]kropengine.Target
+	// Naming maps resource id → derived-name constraints for this blueprint's
+	// nodes, for targets whose API server is stricter than Kubernetes (issue #30).
+	// Resources absent from the map get the unconstrained Kubernetes form.
+	Naming map[string]kropengine.NameConstraints
 }
 
 // recordNamespace returns the configured liveness-record namespace, or the
@@ -157,17 +161,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	// Per-target sinks record the final identity of every applied child so a
 	// complete pass can prune labeled children no longer in the desired set.
 	// RecordingApplier is the INNERMOST decorator (wrapping SSA) so it observes
-	// the object AFTER QualifyingApplier's rename and LabelingApplier's labels.
+	// the object AFTER the engine's rename and LabelingApplier's labels.
 	var appliedConsumer, appliedProvider, appliedHost []kropengine.ChildID
 	appliers := map[kropengine.Target]kropengine.Applier{
 		kropengine.TargetConsumer: kropengine.NewLabelingApplier(
 			kropengine.NewOwnerRefApplier(
 				kropengine.NewRecordingApplier(kropengine.NewSSAApplier(consumerClient), &appliedConsumer), inst), labels),
 		kropengine.TargetProvider: kropengine.NewLabelingApplier(
-			kropengine.NewQualifyingApplier(
-				kropengine.NewRecordingApplier(kropengine.NewSSAApplier(r.ProviderClient), &appliedProvider),
-				func(orig string) string { return kropengine.ProviderChildName(clusterName, instanceName, orig) }),
-			labels),
+			kropengine.NewRecordingApplier(kropengine.NewSSAApplier(r.ProviderClient), &appliedProvider), labels),
 	}
 
 	// External-ref nodes are read (never applied) through the per-target Reader.
@@ -181,14 +182,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	// consumer/provider-only deployments (nil HostClient) never dial a host cluster.
 	if r.HostClient != nil {
 		appliers[kropengine.TargetHost] = kropengine.NewLabelingApplier(
-			kropengine.NewQualifyingApplier(
-				kropengine.NewRecordingApplier(kropengine.NewSSAApplier(r.HostClient), &appliedHost),
-				func(orig string) string { return kropengine.ProviderChildName(clusterName, instanceName, orig) }),
-			labels)
+			kropengine.NewRecordingApplier(kropengine.NewSSAApplier(r.HostClient), &appliedHost), labels)
 		readers[kropengine.TargetHost] = kropengine.NewClientReader(r.HostClient)
 	}
 
-	res, err := kropengine.New().Reconcile(ctx, rt, appliers, readers, r.Routing)
+	// Qualified targets (provider + host) get collision-free derived names; the
+	// consumer plane keeps the blueprint's own template names, since a consumer
+	// workspace holds exactly one tenant's children and cannot collide.
+	engine := kropengine.New()
+	engine.Namer = func(nodeID, originalName string, target kropengine.Target) string {
+		if target == kropengine.TargetConsumer {
+			return originalName
+		}
+
+		return kropengine.ChildName(clusterName, instanceName, originalName, r.Naming[nodeID])
+	}
+
+	res, err := engine.Reconcile(ctx, rt, appliers, readers, r.Routing)
 	if err != nil {
 		return res, err
 	}

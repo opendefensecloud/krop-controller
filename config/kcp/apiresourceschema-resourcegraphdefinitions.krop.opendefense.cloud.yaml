@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260708-b80061e.resourcegraphdefinitions.krop.opendefense.cloud
+  name: v260909-d9b85f3.resourcegraphdefinitions.krop.opendefense.cloud
 spec:
   group: krop.opendefense.cloud
   names:
@@ -177,6 +177,29 @@ spec:
                     items:
                       type: string
                     type: array
+                  naming:
+                    description: |-
+                      Naming constrains the name krop derives for this resource's object(s) on a
+                      qualified target (provider or host). Omit it for the unconstrained
+                      Kubernetes form. Ignored for consumer-target resources, whose objects keep
+                      their template name.
+                    properties:
+                      maxLength:
+                        description: |-
+                          MaxLength caps the total derived name. Omit for the Kubernetes ceiling (253).
+                          The floor of 16 is what a 1-character prefix, a readable character and the
+                          content hash need; anything less leaves no room to stay collision-free.
+                        maximum: 253
+                        minimum: 16
+                        type: integer
+                      prefix:
+                        description: |-
+                          Prefix is prepended as "<prefix>-" so the derived name starts with an
+                          alphabetic character, as RFC1123 label types require.
+                        maxLength: 20
+                        pattern: ^[a-z]([-a-z0-9]*[a-z0-9])?$
+                        type: string
+                    type: object
                   readyWhen:
                     description: |-
                       ReadyWhen is a list of CEL expressions that determine when this resource is considered ready.

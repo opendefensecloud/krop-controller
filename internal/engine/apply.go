@@ -59,7 +59,7 @@ func NewRecordingApplier(inner Applier, sink *[]ChildID) *RecordingApplier {
 }
 
 // Apply delegates to inner and then records obj's final identity and returns its result.
-// The name is already final at this point (QualifyingApplier renames
+// The name is already final at this point (the engine's Namer renames
 // before delegating to its inner), so recording before delegating is correct.
 func (r *RecordingApplier) Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	observed, err := r.inner.Apply(ctx, obj)
@@ -113,27 +113,6 @@ func (a *SSAApplier) Apply(ctx context.Context, obj *unstructured.Unstructured) 
 	}
 
 	return observed, nil
-}
-
-// QualifyingApplier wraps an Applier and rewrites metadata.name via a rename
-// function before delegating. Used to give provider-target children collision-
-// free names (see ProviderChildName) without changing the engine's routing loop.
-type QualifyingApplier struct {
-	inner  Applier
-	rename func(original string) string
-}
-
-// NewQualifyingApplier returns a QualifyingApplier over inner.
-func NewQualifyingApplier(inner Applier, rename func(original string) string) *QualifyingApplier {
-	return &QualifyingApplier{inner: inner, rename: rename}
-}
-
-// Apply renames a copy of obj (metadata.name → rename(name)) and delegates.
-func (q *QualifyingApplier) Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
-	renamed := obj.DeepCopy()
-	renamed.SetName(q.rename(obj.GetName()))
-
-	return q.inner.Apply(ctx, renamed)
 }
 
 // LabelingApplier stamps a fixed label set on each child before delegating, so

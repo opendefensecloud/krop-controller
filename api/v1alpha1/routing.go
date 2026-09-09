@@ -26,6 +26,54 @@ type Resource struct {
 	// +kubebuilder:validation:Enum=consumer;provider;host
 	// +optional
 	Target string `json:"target,omitempty"`
+	// Naming constrains the name krop derives for this resource's object(s) on a
+	// qualified target (provider or host). Omit it for the unconstrained
+	// Kubernetes form. Ignored for consumer-target resources, whose objects keep
+	// their template name.
+	// +optional
+	Naming *Naming `json:"naming,omitempty"`
+}
+
+// Naming constrains the derived name of a qualified-target child so it satisfies
+// an API server stricter than Kubernetes itself. krop derives child names as
+// "<cluster>-<instance>-<template name>-<hash>", which can exceed a target's
+// length ceiling or start with a digit (kcp logical cluster names often do) —
+// both fatal for APIs that enforce their own rules.
+//
+// The content hash always survives, so constrained names stay collision-free.
+type Naming struct {
+	// MaxLength caps the total derived name. Omit for the Kubernetes ceiling (253).
+	// The floor of 16 is what a 1-character prefix, a readable character and the
+	// content hash need; anything less leaves no room to stay collision-free.
+	// +kubebuilder:validation:Minimum=16
+	// +kubebuilder:validation:Maximum=253
+	// +optional
+	MaxLength int `json:"maxLength,omitempty"`
+	// Prefix is prepended as "<prefix>-" so the derived name starts with an
+	// alphabetic character, as RFC1123 label types require.
+	// +kubebuilder:validation:Pattern=`^[a-z]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=20
+	// +optional
+	Prefix string `json:"prefix,omitempty"`
+}
+
+// NamingMap returns a map of resource id -> naming constraints for the resources
+// that declare a naming block. Resources without one are ABSENT rather than
+// zero-valued, so "no naming block" and "explicitly unconstrained" stay
+// indistinguishable downstream — both mean the Kubernetes form.
+//
+// It is a separate accessor rather than a third ToKro return so ToKro's signature
+// (and every caller of it) stays untouched.
+func (s ResourceGraphDefinitionSpec) NamingMap() map[string]Naming {
+	naming := map[string]Naming{}
+	for _, r := range s.Resources {
+		if r == nil || r.Naming == nil {
+			continue
+		}
+		naming[r.ID] = *r.Naming
+	}
+
+	return naming
 }
 
 // ResourceGraphDefinitionSpec is kro's spec (Schema + Resources) with each

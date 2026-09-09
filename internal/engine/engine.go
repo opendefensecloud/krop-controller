@@ -29,11 +29,25 @@ import (
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 )
 
+// Namer derives the final metadata.name for one desired child, given the id of
+// the resource that produced it and the target it is bound for. Returning
+// originalName unchanged leaves the name alone.
+//
+// Naming lives here rather than in an Applier decorator because the resource id
+// is only in scope in the reconcile loop: Applier.Apply receives a bare object
+// with no way back to the node that produced it. Per-resource naming (issue #30)
+// is keyed by that id, exactly as routing already is.
+type Namer func(nodeID, originalName string, target Target) string
+
 // Engine drives kro's runtime for a single instance: it resolves, routes,
 // applies and observes each node, then aggregates instance status.
-type Engine struct{}
+type Engine struct {
+	// Namer, when non-nil, renames every desired child before it is applied. A
+	// nil Namer leaves names exactly as the blueprint templates produced them.
+	Namer Namer
+}
 
-// New returns a stateless Engine.
+// New returns a stateless Engine that renames nothing.
 func New() *Engine { return &Engine{} }
 
 // Result summarizes one reconcile pass.
@@ -169,6 +183,16 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 		}
 		observed := make([]*unstructured.Unstructured, 0, len(desired))
 		for _, obj := range desired {
+			// Rename before applying: the applied object IS the child, so every
+			// downstream decorator (labels, prune bookkeeping) sees the final name.
+			// Copy first — obj belongs to kro's runtime, which must keep the
+			// template's own name for subsequent CEL resolution.
+			if e.Namer != nil {
+				if name := e.Namer(node.Spec.Meta.ID, obj.GetName(), target); name != obj.GetName() {
+					obj = obj.DeepCopy()
+					obj.SetName(name)
+				}
+			}
 			obs, err := applier.Apply(ctx, obj)
 			if err != nil {
 				return res, fmt.Errorf("node %s: apply to %s: %w", node.Spec.Meta.ID, target, err)

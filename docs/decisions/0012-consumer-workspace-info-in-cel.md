@@ -8,7 +8,7 @@ Accepted.
 
 Host- and provider-target children keep their template `metadata.name` (only
 provider-target children are additionally renamed collision-free by krop — see
-[blueprints.md](../blueprints.md#provider-child-naming-collision-free)). When many
+[blueprints.md](../blueprints.md#qualified-child-naming-collision-free)). When many
 tenants share **one** host cluster or provider namespace, a literal name like `db`
 collides across tenants. A blueprint author needs a way to derive a collision-free
 name **from the consumer's identity** — e.g. prefix the host Deployment with the

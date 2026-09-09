@@ -90,3 +90,125 @@ func TestProviderChildName_NoSeparatorSeamOnTruncation(t *testing.T) {
 		t.Fatalf("name too long: %d", len(got))
 	}
 }
+
+func TestChildName_ZeroConstraintsMatchProviderChildName(t *testing.T) {
+	// The constrained form must be a strict generalization: with no constraints it
+	// reproduces today's names byte-for-byte, so existing children keep their
+	// identity and no migration is implied by this feature.
+	got := ChildName("cluster1", "demo", "eu-record", NameConstraints{})
+	if want := ProviderChildName("cluster1", "demo", "eu-record"); got != want {
+		t.Fatalf("zero constraints changed the name: got %q, want %q", got, want)
+	}
+}
+
+func TestChildName_RespectsMaxLength(t *testing.T) {
+	// A kcp logical cluster name plus instance plus original comfortably exceeds
+	// the 30-character ceiling Google Cloud enforces (issue #30).
+	got := ChildName("231cyw14qhtl611l", "test-project-1-cat-cloudapi", "test-project-1",
+		NameConstraints{MaxLength: 30})
+	if len(got) > 30 {
+		t.Fatalf("name exceeds maxLength: %d chars, %q", len(got), got)
+	}
+}
+
+func TestChildName_PrefixStartsAlphabetic(t *testing.T) {
+	// kcp logical cluster names routinely start with a digit, which RFC1123 label
+	// types reject. The prefix is how a blueprint author guarantees a letter start.
+	got := ChildName("231cyw14qhtl611l", "demo", "eu-record", NameConstraints{Prefix: "p"})
+	if got[0] < 'a' || got[0] > 'z' {
+		t.Fatalf("name must start with a letter, got %q", got)
+	}
+	if !strings.HasPrefix(got, "p-") {
+		t.Fatalf("name must carry the configured prefix, got %q", got)
+	}
+}
+
+func TestChildName_CollisionFreeUnderTruncation(t *testing.T) {
+	// Truncating the readable middle must never cost injectivity: the full content
+	// hash survives, so distinct tuples stay distinct even at the tightest ceiling.
+	c := NameConstraints{MaxLength: 30, Prefix: "p"}
+	a := ChildName("231cyw14qhtl611l", "test-project-1", "proj", c)
+	b := ChildName("kvdk8299mah3yj1p", "test-project-1", "proj", c)
+	if a == b {
+		t.Fatalf("different consumers collided under truncation, both %q", a)
+	}
+	if len(a) > 30 || len(b) > 30 {
+		t.Fatalf("truncated names exceed maxLength: %q (%d), %q (%d)", a, len(a), b, len(b))
+	}
+}
+
+func TestChildName_NoSeparatorSeamUnderMaxLength(t *testing.T) {
+	// Same seam rule as the unconstrained form: truncation must not leave a
+	// trailing "-"/"." butting against the hash suffix.
+	got := ChildName("cluster1", "demo-", "record", NameConstraints{MaxLength: 24})
+	if strings.Contains(got, "--") || strings.Contains(got, ".-") {
+		t.Fatalf("derived name has a separator seam: %q", got)
+	}
+}
+
+func TestChildName_MaxLengthTooSmallForReadablePartStillHashes(t *testing.T) {
+	// A ceiling that leaves no room for the readable middle must still produce a
+	// deterministic, prefixed, in-bounds name rather than panicking or overflowing.
+	// (The Registrar rejects such constraints at publish time; this is the
+	// belt-and-braces runtime behavior.)
+	c := NameConstraints{MaxLength: 15, Prefix: "p"}
+	got := ChildName("231cyw14qhtl611l", "demo", "eu-record", c)
+	if len(got) > 15 {
+		t.Fatalf("name exceeds maxLength: %d chars, %q", len(got), got)
+	}
+	if got != ChildName("231cyw14qhtl611l", "demo", "eu-record", c) {
+		t.Fatal("degenerate form is not deterministic")
+	}
+	if !strings.HasPrefix(got, "p-") {
+		t.Fatalf("prefix must survive: %q", got)
+	}
+}
+
+func TestNameConstraints_Validate(t *testing.T) {
+	cases := []struct {
+		name    string
+		c       NameConstraints
+		wantErr bool
+	}{
+		{"unconstrained zero value", NameConstraints{}, false},
+		{"prefix only", NameConstraints{Prefix: "p"}, false},
+		{"gcp ceiling with prefix", NameConstraints{MaxLength: 30, Prefix: "p"}, false},
+		{"exactly enough for one readable char", NameConstraints{MaxLength: 16, Prefix: "p"}, false},
+		{"one char short of readable", NameConstraints{MaxLength: 15, Prefix: "p"}, true},
+		{"long prefix eats the budget", NameConstraints{MaxLength: 16, Prefix: "verylongprefix"}, true},
+		{"no prefix needs less room", NameConstraints{MaxLength: 14}, false},
+		{"no prefix, one short", NameConstraints{MaxLength: 13}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.c.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("Validate() = nil, want an error for %+v", tc.c)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Validate() = %v, want nil for %+v", err, tc.c)
+			}
+		})
+	}
+}
+
+// Validate is the publish-time gate for exactly the runtime degeneration
+// ChildName falls back to: anything Validate accepts must still leave room for a
+// readable character, so an accepted constraint never produces a bare hash.
+func TestNameConstraints_ValidateAgreesWithChildName(t *testing.T) {
+	c := NameConstraints{MaxLength: 16, Prefix: "p"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+	got := ChildName("231cyw14qhtl611l", "demo", "eu-record", c)
+	if len(got) > c.MaxLength {
+		t.Fatalf("accepted constraint produced an over-length name: %q (%d)", got, len(got))
+	}
+	if got == "p-"+"" {
+		t.Fatal("accepted constraint degenerated to a bare prefix")
+	}
+	// "p-" + at least one readable char + "-" + 12 hex
+	if len(got) < 2+1+1+hashLen {
+		t.Fatalf("accepted constraint lost its readable part: %q", got)
+	}
+}

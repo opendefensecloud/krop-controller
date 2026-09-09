@@ -85,29 +85,6 @@ func TestSSAApplier_AppliesAndReadsBack(t *testing.T) {
 	}
 }
 
-func TestQualifyingApplier_RenamesBeforeDelegating(t *testing.T) {
-	inner := &fakeApplier{}
-	q := NewQualifyingApplier(inner, func(orig string) string { return "pfx-" + orig })
-
-	obj := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]any{"name": "record", "namespace": "default"},
-	}}
-	if _, err := q.Apply(context.Background(), obj); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if len(inner.applied) != 1 {
-		t.Fatalf("inner not called once: %d", len(inner.applied))
-	}
-	if got := inner.applied[0].GetName(); got != "pfx-record" {
-		t.Fatalf("inner received name %q, want pfx-record", got)
-	}
-	// original object must not be mutated
-	if obj.GetName() != "record" {
-		t.Fatalf("caller's object was mutated: name=%q", obj.GetName())
-	}
-}
-
 func TestLabelingApplier_MergesLabels_NoMutateCaller(t *testing.T) {
 	inner := &fakeApplier{}
 	a := NewLabelingApplier(inner, map[string]string{"k": "v"})
@@ -128,18 +105,20 @@ func TestLabelingApplier_MergesLabels_NoMutateCaller(t *testing.T) {
 }
 
 func TestRecordingApplier_RecordsFinalIdentity(t *testing.T) {
-	// Chain: Qualifying(Recording(fake)) — the recorder is innermost, so it must
-	// observe the RENAMED name that Qualifying set before delegating.
+	// Chain: Labeling(Recording(fake)) — the recorder is innermost, so it records
+	// the identity of the object as it is finally written. The name it sees is
+	// already final: the engine's Namer renames before any applier runs (see
+	// enginenaming_test.go), so prune bookkeeping and the live object always agree.
 	inner := &fakeApplier{}
 	var sink []ChildID
 	rec := NewRecordingApplier(inner, &sink)
-	q := NewQualifyingApplier(rec, func(orig string) string { return "pfx-" + orig })
+	a := NewLabelingApplier(rec, map[string]string{"k": "v"})
 
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]any{"name": "record", "namespace": "ns1"},
+		"metadata": map[string]any{"name": "pfx-record", "namespace": "ns1"},
 	}}
-	if _, err := q.Apply(context.Background(), obj); err != nil {
+	if _, err := a.Apply(context.Background(), obj); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	if len(sink) != 1 {
@@ -149,7 +128,7 @@ func TestRecordingApplier_RecordsFinalIdentity(t *testing.T) {
 	want := ChildID{
 		GVK:       schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"},
 		Namespace: "ns1",
-		Name:      "pfx-record", // recorded the RENAMED name, not "record"
+		Name:      "pfx-record",
 	}
 	if got != want {
 		t.Fatalf("recorded ChildID = %+v, want %+v", got, want)

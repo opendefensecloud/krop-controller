@@ -97,3 +97,59 @@ func TestToKro_SkipsNilResources(t *testing.T) {
 		t.Errorf("routing = %+v, want {config: provider}", routing)
 	}
 }
+
+func TestNamingMap_KeyedByResourceID(t *testing.T) {
+	spec := ResourceGraphDefinitionSpec{
+		Schema: &krov1alpha1.Schema{Kind: "Project"},
+		Resources: []*Resource{
+			{Resource: krov1alpha1.Resource{ID: "config"}}, // no naming block
+			{
+				Resource: krov1alpha1.Resource{ID: "gdcaProject"},
+				Target:   "host",
+				Naming:   &Naming{MaxLength: 30, Prefix: "p"},
+			},
+		},
+	}
+
+	naming := spec.NamingMap()
+
+	got, ok := naming["gdcaProject"]
+	if !ok {
+		t.Fatal("naming[gdcaProject] absent, want present")
+	}
+	if got.MaxLength != 30 || got.Prefix != "p" {
+		t.Errorf("naming[gdcaProject] = %+v, want {MaxLength:30 Prefix:p}", got)
+	}
+	// A resource without a naming block must not appear: absent means "no
+	// constraints", which the engine reads as the unconstrained Kubernetes form.
+	if _, ok := naming["config"]; ok {
+		t.Error("naming[config] present, want absent (no naming block)")
+	}
+	if len(naming) != 1 {
+		t.Errorf("naming has %d entries, want 1", len(naming))
+	}
+}
+
+func TestToKro_StripsNaming(t *testing.T) {
+	// Naming is a krop concept: kro's builder must never see it, exactly as it
+	// never sees target.
+	spec := ResourceGraphDefinitionSpec{
+		Schema: &krov1alpha1.Schema{Kind: "Project"},
+		Resources: []*Resource{
+			{
+				Resource: krov1alpha1.Resource{ID: "gdcaProject"},
+				Target:   "host",
+				Naming:   &Naming{MaxLength: 30, Prefix: "p"},
+			},
+		},
+	}
+
+	kroSpec, _ := spec.ToKro()
+
+	if len(kroSpec.Resources) != 1 {
+		t.Fatalf("kro spec has %d resources, want 1", len(kroSpec.Resources))
+	}
+	if kroSpec.Resources[0].ID != "gdcaProject" {
+		t.Errorf("kro resource id = %q, want gdcaProject", kroSpec.Resources[0].ID)
+	}
+}
