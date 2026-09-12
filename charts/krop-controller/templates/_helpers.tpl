@@ -64,7 +64,11 @@ Controller image
 */}}
 {{- define "krop-controller.image" -}}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion }}
+{{- if hasPrefix "@" $tag }}
+{{- printf "%s%s" .Values.image.repository $tag }}
+{{- else }}
 {{- printf "%s:%s" .Values.image.repository $tag }}
+{{- end }}
 {{- end }}
 
 {{/*

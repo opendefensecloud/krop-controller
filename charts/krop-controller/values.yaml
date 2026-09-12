@@ -3,7 +3,13 @@
 # -- Image configuration for krop-controller
 image:
   repository: ghcr.io/opendefensecloud/krop-controller
-  # -- Overrides the image tag (default is the chart appVersion)
+  # -- Overrides the image tag (default is the chart appVersion).
+  #
+  # Three shapes are accepted, because Renovate maintains this field and
+  # `docker:pinDigests` appends a digest to whatever is here: a tag ("v0.1.2"),
+  # a tag with a digest ("v0.1.2@sha256:..."), or a bare digest ("@sha256:..."),
+  # which is what pinning an empty tag produces. The template joins with ":"
+  # only when there is a tag to join.
   tag: "@sha256:d14c6f54fa34f0f404f44d5dff13e11500e800bd449a50c8c552be9746a6d9a5"
   pullPolicy: IfNotPresent
 
