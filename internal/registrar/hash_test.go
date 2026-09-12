@@ -52,11 +52,11 @@ func TestSpecHash_StableAndSensitive(t *testing.T) {
 func TestSpecHash_SensitiveToTarget(t *testing.T) {
 	base := kropv1alpha1.ResourceGraphDefinitionSpec{
 		Schema:    &krov1alpha1.Schema{Kind: "A"},
-		Resources: []*kropv1alpha1.Resource{{Resource: krov1alpha1.Resource{ID: "config"}}},
+		Resources: []*kropv1alpha1.Resource{{ID: "config"}},
 	}
 	retargeted := kropv1alpha1.ResourceGraphDefinitionSpec{
 		Schema:    &krov1alpha1.Schema{Kind: "A"},
-		Resources: []*kropv1alpha1.Resource{{Resource: krov1alpha1.Resource{ID: "config"}, Target: "provider"}},
+		Resources: []*kropv1alpha1.Resource{{ID: "config", Target: "provider"}},
 	}
 	if mustHash(t, base) == mustHash(t, retargeted) {
 		t.Fatal("a target change must bump the spec hash")

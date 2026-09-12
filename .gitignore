@@ -5,3 +5,4 @@
 common.mk
 *.test
 coverprofile
+/.pre-commit-config.yaml

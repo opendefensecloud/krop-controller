@@ -58,7 +58,7 @@ func NewEndpointGraphSource(cfg *rest.Config) (*EndpointGraphSource, error) {
 
 // Build compiles the RGD into a graph (per-blueprint; amortized over instances).
 func (s *EndpointGraphSource) Build(rgd *krov1alpha1.ResourceGraphDefinition) (*graph.Graph, error) {
-	return s.builder.NewResourceGraphDefinition(rgd, graph.RGDConfig{
+	return s.builder.NewResourceGraphDefinition(rgd, graph.Config{
 		MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000,
 	})
 }

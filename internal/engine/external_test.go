@@ -87,7 +87,7 @@ func externalRefRuntime(t *testing.T) *runtime.Runtime {
 		"metadata": map[string]any{"name": "demo", "namespace": "default"},
 		"spec":     map[string]any{"region": "eu"},
 	}}
-	rt, err := runtime.FromGraph(g, inst, graph.RGDConfig{MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000})
+	rt, err := runtime.FromGraph(g, graph.Config{MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000}, runtime.WithInstance(inst))
 	if err != nil {
 		t.Fatalf("FromGraph: %v", err)
 	}

@@ -144,9 +144,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	runtimeInst := inst.DeepCopy()
 	kropengine.StampConsumerCluster(runtimeInst, clusterName)
 
-	rt, err := kroruntime.FromGraph(r.Graph, runtimeInst, krograph.RGDConfig{
+	rt, err := kroruntime.FromGraph(r.Graph, krograph.Config{
 		MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000,
-	})
+	}, kroruntime.WithInstance(runtimeInst))
 	if err != nil {
 		return kropengine.Result{}, fmt.Errorf("runtime: %w", err)
 	}

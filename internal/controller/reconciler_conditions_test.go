@@ -77,7 +77,7 @@ func buildConditionsGraph(t *testing.T) *krograph.Graph {
 	b := &krograph.Builder{}
 	setBuilderField(b, "schemaResolver", fakeResolver)
 	setBuilderField(b, "restMapper", meta.RESTMapper(rm))
-	g, err := b.NewResourceGraphDefinition(conditionsRGD(), krograph.RGDConfig{
+	g, err := b.NewResourceGraphDefinition(conditionsRGD(), krograph.Config{
 		MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000,
 	})
 	if err != nil {

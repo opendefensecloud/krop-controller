@@ -25,9 +25,9 @@ func TestToKro_RoutingMap(t *testing.T) {
 	spec := ResourceGraphDefinitionSpec{
 		Schema: &krov1alpha1.Schema{Kind: "KubernetesCluster"},
 		Resources: []*Resource{
-			{Resource: krov1alpha1.Resource{ID: "config"}}, // empty target
-			{Resource: krov1alpha1.Resource{ID: "agentRequest"}, Target: "provider"},
-			{Resource: krov1alpha1.Resource{ID: "vm"}, Target: "host"},
+			{ID: "config"}, // empty target
+			{ID: "agentRequest", Target: "provider"},
+			{ID: "vm", Target: "host"},
 		},
 	}
 
@@ -55,8 +55,8 @@ func TestToKro_PreservesKroFields(t *testing.T) {
 	spec := ResourceGraphDefinitionSpec{
 		Schema: &krov1alpha1.Schema{Kind: "KubernetesCluster"},
 		Resources: []*Resource{
-			{Resource: krov1alpha1.Resource{ID: "config", Template: tmpl}, Target: "provider"},
-			{Resource: krov1alpha1.Resource{ID: "existing", ExternalRef: extRef}},
+			{ID: "config", Template: tmpl, Target: "provider"},
+			{ID: "existing", ExternalRef: extRef},
 		},
 	}
 
@@ -83,7 +83,7 @@ func TestToKro_SkipsNilResources(t *testing.T) {
 	spec := ResourceGraphDefinitionSpec{
 		Resources: []*Resource{
 			nil,
-			{Resource: krov1alpha1.Resource{ID: "config"}, Target: "provider"},
+			{ID: "config", Target: "provider"},
 			nil,
 		},
 	}
