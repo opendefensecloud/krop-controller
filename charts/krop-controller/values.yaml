@@ -3,7 +3,13 @@
 # -- Image configuration for krop-controller
 image:
   repository: ghcr.io/opendefensecloud/krop-controller
-  # -- Overrides the image tag (default is the chart appVersion)
+  # -- Overrides the image tag (default is the chart appVersion).
+  #
+  # Three shapes are accepted, because Renovate maintains this field and
+  # `docker:pinDigests` appends a digest to whatever is here: a tag ("v0.1.2"),
+  # a tag with a digest ("v0.1.2@sha256:..."), or a bare digest ("@sha256:..."),
+  # which is what pinning an empty tag produces. The template joins with ":"
+  # only when there is a tag to join.
   tag: "@sha256:d14c6f54fa34f0f404f44d5dff13e11500e800bd449a50c8c552be9746a6d9a5"
   pullPolicy: IfNotPresent
 
@@ -136,3 +142,20 @@ tolerations: []
 
 # -- Affinity rules
 affinity: {}
+
+# -- Host aliases for the controller pod (maps to spec.hostAliases).
+#
+# Needed wherever kcp's external hostname does not resolve from inside the
+# cluster. The controller image is distroless and carries no nss-myhostname, so
+# a name the host resolves locally — a `.localhost` external hostname, the usual
+# choice for a kind setup, since RFC 6761 keeps it off public DNS — reaches the
+# cluster's DNS instead and NXDOMAINs. The pod then starts, reports healthy, and
+# never reaches kcp.
+#
+# /etc/hosts is the one place every resolver looks first, so an alias to the
+# front-proxy Service address fixes it:
+#
+#   hostAliases:
+#     - ip: "10.96.0.22"
+#       hostnames: ["kcp.localhost"]
+hostAliases: []
