@@ -136,3 +136,6 @@ tolerations: []
 
 # -- Affinity rules
 affinity: {}
+
+# -- Host aliases added to the pod's /etc/hosts (list of {ip, hostnames})
+hostAliases: []
