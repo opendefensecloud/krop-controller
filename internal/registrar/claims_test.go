@@ -103,29 +103,29 @@ func TestValidateClaims(t *testing.T) {
 		{
 			name: "core type with empty identity is OK",
 			claims: []apisv1alpha2.PermissionClaim{
-				{GroupResource: apisv1alpha2.GroupResource{Group: "", Resource: "configmaps"}, IdentityHash: ""},
+				{Group: "", Resource: "configmaps", IdentityHash: ""},
 			},
 			wantErr: false,
 		},
 		{
 			name: "foreign type with resolved identity is OK",
 			claims: []apisv1alpha2.PermissionClaim{
-				{GroupResource: apisv1alpha2.GroupResource{Group: "access.opendefense.cloud", Resource: "scopes"}, IdentityHash: "abc123"},
+				{Group: "access.opendefense.cloud", Resource: "scopes", IdentityHash: "abc123"},
 			},
 			wantErr: false,
 		},
 		{
 			name: "foreign type with empty identity is rejected",
 			claims: []apisv1alpha2.PermissionClaim{
-				{GroupResource: apisv1alpha2.GroupResource{Group: "access.opendefense.cloud", Resource: "scopes"}, IdentityHash: ""},
+				{Group: "access.opendefense.cloud", Resource: "scopes", IdentityHash: ""},
 			},
 			wantErr: true,
 		},
 		{
 			name: "mixed: one unresolved foreign among valid is rejected",
 			claims: []apisv1alpha2.PermissionClaim{
-				{GroupResource: apisv1alpha2.GroupResource{Group: "", Resource: "configmaps"}, IdentityHash: ""},
-				{GroupResource: apisv1alpha2.GroupResource{Group: "access.opendefense.cloud", Resource: "scopes"}, IdentityHash: ""},
+				{Group: "", Resource: "configmaps", IdentityHash: ""},
+				{Group: "access.opendefense.cloud", Resource: "scopes", IdentityHash: ""},
 			},
 			wantErr: true,
 		},

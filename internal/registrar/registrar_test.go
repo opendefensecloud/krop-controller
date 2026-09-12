@@ -53,24 +53,22 @@ func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 	)
 	now := metav1.Now()
 	bp := &kropv1alpha1.ResourceGraphDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "widgets",
-			DeletionTimestamp: &now,
-			// The fake client only persists a DeletionTimestamp when the object
-			// still carries a finalizer, so seed it with ours.
-			Finalizers: []string{blueprintFinalizer},
-		},
-		Status: kropv1alpha1.BlueprintStatus{ExportedAPI: exportName},
+		Name:              "widgets",
+		DeletionTimestamp: &now,
+		// The fake client only persists a DeletionTimestamp when the object
+		// still carries a finalizer, so seed it with ours.
+		Finalizers: []string{blueprintFinalizer},
+		Status:     kropv1alpha1.BlueprintStatus{ExportedAPI: exportName},
 	}
 	// Seed the published APIExport (referencing its ARS) and the ARS itself, so the
 	// cascade-unpublish path can find and delete them.
-	export := &apisv1alpha2.APIExport{ObjectMeta: metav1.ObjectMeta{Name: exportName}}
+	export := &apisv1alpha2.APIExport{Name: exportName}
 	export.Spec.Resources = []apisv1alpha2.ResourceSchema{{
 		Name:   "widgets",
 		Group:  "example.com",
 		Schema: arsName,
 	}}
-	ars := &apisv1alpha1.APIResourceSchema{ObjectMeta: metav1.ObjectMeta{Name: arsName}}
+	ars := &apisv1alpha1.APIResourceSchema{Name: arsName}
 
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -90,7 +88,7 @@ func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 	}
 
 	res, err := r.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "widgets"},
+		Name: "widgets",
 	})
 	if err != nil {
 		t.Fatalf("Reconcile returned error: %v", err)
@@ -139,12 +137,10 @@ func TestReconcile_DeleteWithoutFinalizerIsNoop(t *testing.T) {
 	// Keep a placeholder finalizer so the fake client persists the deleting object,
 	// but not ours — Reconcile must treat it as already torn down.
 	bp := &kropv1alpha1.ResourceGraphDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "widgets",
-			DeletionTimestamp: &now,
-			Finalizers:        []string{"other.example.com/keep"},
-		},
-		Status: kropv1alpha1.BlueprintStatus{ExportedAPI: "widgets.example.com"},
+		Name:              "widgets",
+		DeletionTimestamp: &now,
+		Finalizers:        []string{"other.example.com/keep"},
+		Status:            kropv1alpha1.BlueprintStatus{ExportedAPI: "widgets.example.com"},
 	}
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(bp).Build()
@@ -153,7 +149,7 @@ func TestReconcile_DeleteWithoutFinalizerIsNoop(t *testing.T) {
 	r := &Registrar{Client: c, OnDeleted: func(string) { called = true }}
 
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "widgets"},
+		Name: "widgets",
 	}); err != nil {
 		t.Fatalf("Reconcile returned error: %v", err)
 	}

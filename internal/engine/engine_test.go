@@ -39,9 +39,9 @@ func newInstance() *unstructured.Unstructured {
 func newRuntime(t *testing.T, inst *unstructured.Unstructured) *runtime.Runtime {
 	t.Helper()
 	g := buildTestGraph(t, sampleRGD())
-	rt, err := runtime.FromGraph(g, inst, graph.RGDConfig{
+	rt, err := runtime.FromGraph(g, graph.Config{
 		MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000,
-	})
+	}, runtime.WithInstance(inst))
 	if err != nil {
 		t.Fatalf("FromGraph: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestReconcile_GenuineGetDesiredError_IsReturned(t *testing.T) {
 		"metadata": map[string]any{"name": "demo", "namespace": "default"},
 		"spec":     map[string]any{"region": "abc"}, // int("abc") → type conversion error
 	}}
-	rt, err := runtime.FromGraph(g, inst, graph.RGDConfig{MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000})
+	rt, err := runtime.FromGraph(g, graph.Config{MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000}, runtime.WithInstance(inst))
 	if err != nil {
 		t.Fatalf("FromGraph: %v", err)
 	}

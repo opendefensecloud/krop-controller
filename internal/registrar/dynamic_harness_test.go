@@ -41,7 +41,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -143,7 +142,7 @@ func startDynamicHarness(ctx context.Context, opts harnessOptions) *dynamicHarne
 
 	// 4. Author the blueprint, then drive publication via ONE direct reconcile.
 	applyFile(ctx, h.cli, h.providerPath, opts.blueprintFile)
-	_, err = h.reg.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: opts.blueprintObj}})
+	_, err = h.reg.Reconcile(ctx, reconcile.Request{Name: opts.blueprintObj})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(h.sup.Running(opts.exportName)).To(BeTrue(), "supervisor must have auto-started the instance manager for the published export")
 
@@ -157,7 +156,7 @@ func startDynamicHarness(ctx context.Context, opts harnessOptions) *dynamicHarne
 // after a live spec edit): Reconcile → OnPublished(changed) → Stop+Ensure.
 func (h *dynamicHarness) republish(ctx context.Context) {
 	GinkgoHelper()
-	_, err := h.reg.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: h.opts.blueprintObj}})
+	_, err := h.reg.Reconcile(ctx, reconcile.Request{Name: h.opts.blueprintObj})
 	Expect(err).NotTo(HaveOccurred())
 }
 

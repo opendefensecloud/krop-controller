@@ -50,9 +50,9 @@ func DeriveClaims(foreign []schema.GroupResource, verbs []string, identity map[s
 	claims := make([]apisv1alpha2.PermissionClaim, 0, len(sorted))
 	for _, gr := range sorted {
 		claims = append(claims, apisv1alpha2.PermissionClaim{
-			GroupResource: apisv1alpha2.GroupResource{Group: gr.Group, Resource: gr.Resource},
-			Verbs:         verbs,
-			IdentityHash:  identity[gr],
+			Group: gr.Group, Resource: gr.Resource,
+			Verbs:        verbs,
+			IdentityHash: identity[gr],
 		})
 	}
 

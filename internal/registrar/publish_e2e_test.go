@@ -38,7 +38,6 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -135,7 +134,7 @@ var _ = Describe("M4a Registrar publication", Ordered, func() {
 		}
 		// The blueprint CRD is cluster-scoped (workspace-level); no namespace.
 		_, err = reg.Reconcile(ctx, reconcile.Request{
-			NamespacedName: types.NamespacedName{Name: "kubernetescluster"},
+			Name: "kubernetescluster",
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})

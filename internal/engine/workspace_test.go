@@ -81,7 +81,7 @@ func TestReconcile_ConsumerClusterAnnotation_ResolvesInCEL(t *testing.T) {
 	// The reconciler stamps this before FromGraph; mirror that here.
 	StampConsumerCluster(inst, "kvdk8299mah3yj1p")
 
-	rt, err := runtime.FromGraph(g, inst, graph.RGDConfig{MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000})
+	rt, err := runtime.FromGraph(g, graph.Config{MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000}, runtime.WithInstance(inst))
 	if err != nil {
 		t.Fatalf("FromGraph: %v", err)
 	}

@@ -81,7 +81,7 @@ func buildTestGraph(t *testing.T, rgd *krov1alpha1.ResourceGraphDefinition) *gra
 	b := &graph.Builder{}
 	setUnexportedField(b, "schemaResolver", fakeResolver)
 	setUnexportedField(b, "restMapper", meta.RESTMapper(rm))
-	g, err := b.NewResourceGraphDefinition(rgd, graph.RGDConfig{
+	g, err := b.NewResourceGraphDefinition(rgd, graph.Config{
 		MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000,
 	})
 	if err != nil {
