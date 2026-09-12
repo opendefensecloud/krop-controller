@@ -143,19 +143,5 @@ tolerations: []
 # -- Affinity rules
 affinity: {}
 
-# -- Host aliases for the controller pod (maps to spec.hostAliases).
-#
-# Needed wherever kcp's external hostname does not resolve from inside the
-# cluster. The controller image is distroless and carries no nss-myhostname, so
-# a name the host resolves locally — a `.localhost` external hostname, the usual
-# choice for a kind setup, since RFC 6761 keeps it off public DNS — reaches the
-# cluster's DNS instead and NXDOMAINs. The pod then starts, reports healthy, and
-# never reaches kcp.
-#
-# /etc/hosts is the one place every resolver looks first, so an alias to the
-# front-proxy Service address fixes it:
-#
-#   hostAliases:
-#     - ip: "10.96.0.22"
-#       hostnames: ["kcp.localhost"]
+# -- Host aliases added to the pod's /etc/hosts (list of {ip, hostnames})
 hostAliases: []
