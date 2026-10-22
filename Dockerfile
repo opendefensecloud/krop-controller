@@ -1,7 +1,7 @@
 # Build the krop-controller binary (the single kcp controller at ./cmd/controller).
 # Multi-arch: the builder runs on $BUILDPLATFORM and cross-compiles Go to $TARGETARCH;
 # the distroless runtime stage has no RUN, so amd64+arm64 needs no QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.27@sha256:f44f6e88636cfb311f9ebace870ded69d943f227bb3cb27d32ffd84ea18c43ea AS build
+FROM --platform=$BUILDPLATFORM golang:1.27@sha256:f20d83a83e18dbd2a4714b8ffd4b30b287b6243962dd75608e86abcc63ba4efc AS build
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
