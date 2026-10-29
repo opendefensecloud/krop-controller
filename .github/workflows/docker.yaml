@@ -10,9 +10,6 @@ on:
   # Tag builds come in through release.yaml, which needs this run's SBOMs
   # before it can create the draft release.
   workflow_call:
-  release:
-    types:
-      - published
   push:
     branches:
       - main
@@ -33,14 +30,13 @@ jobs:
       id-token: write # for keyless signing
       attestations: write
     name: Build and Publish Docker Image
-    # Condition: Run on push to main/tags, published release, or PR with 'ok-to-image' label
+    # Condition: Run on push to main, a tag build called from release.yaml, or PR with 'ok-to-image' label
     if: |
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && (
         contains(toJSON(github.event.pull_request.labels), '"ok-to-image"') ||
         contains(toJSON(github.event.pull_request.labels), '"ok-to-e2e"')
-      )) ||
-      (github.event_name == 'release' && github.event.action == 'published')
+      ))
     runs-on: ubuntu-26.04
     outputs:
       image-tag: ${{ steps.meta.outputs.version }}
