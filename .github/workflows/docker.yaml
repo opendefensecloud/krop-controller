@@ -3,15 +3,16 @@ name: Build/Publish Docker Image
 permissions:
   contents: read
 
+env:
+  PLATFORMS: linux/amd64,linux/arm64
+
 on:
-  release:
-    types:
-      - published
+  # Tag builds come in through release.yaml, which needs this run's SBOMs
+  # before it can create the draft release.
+  workflow_call:
   push:
     branches:
       - main
-    tags:
-      - v*
     paths-ignore:
       - "docs/**"
       - "**/*.md"
@@ -29,14 +30,13 @@ jobs:
       id-token: write # for keyless signing
       attestations: write
     name: Build and Publish Docker Image
-    # Condition: Run on push to main/tags, published release, or PR with 'ok-to-image' label
+    # Condition: Run on push to main, a tag build called from release.yaml, or PR with 'ok-to-image' label
     if: |
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && (
         contains(toJSON(github.event.pull_request.labels), '"ok-to-image"') ||
         contains(toJSON(github.event.pull_request.labels), '"ok-to-e2e"')
-      )) ||
-      (github.event_name == 'release' && github.event.action == 'published')
+      ))
     runs-on: ubuntu-26.04
     outputs:
       image-tag: ${{ steps.meta.outputs.version }}
@@ -80,8 +80,13 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ env.PLATFORMS }}
           push: true
+          # BuildKit attaches one SBOM attestation per platform, which is what
+          # a multi-arch image needs. actions/attest can only ever name a
+          # single subject-digest, so it would have to pair one architecture's
+          # SBOM with the shared index digest.
+          sbom: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -103,32 +108,38 @@ jobs:
               --yes \
               "$tag"@${{ steps.image.outputs.digest }}
           done
-      - name: Extract first tag
-        id: first-tag
+      - name: Install syft
+        id: syft
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+      # Release assets, not attestations: the registry gets BuildKit's SPDX
+      # attestation per platform, the release gets CycloneDX files that the
+      # OCM pipeline can embed. syft resolves the index to the runner's own
+      # platform unless told otherwise, so ask for each one explicitly.
+      - name: Generate per-architecture SBOMs
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          SYFT: ${{ steps.syft.outputs.cmd }}
+          IMAGE: ghcr.io/opendefensecloud/krop-controller
+          DIGEST: ${{ steps.image.outputs.digest }}
         run: |
-          IFS=$'\n' read -ra TAGS <<< "${{ steps.meta.outputs.tags }}"
-          echo "tag=${TAGS[0]}" >> $GITHUB_OUTPUT
-      - name: Generate SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+          set -euo pipefail
+          mkdir -p sboms
+          for p in ${PLATFORMS//,/ }; do
+            "$SYFT" scan --platform "$p" "${IMAGE}@${DIGEST}" \
+              -o "cyclonedx-json=sboms/krop-controller-${p//\//-}.cyclonedx.json"
+          done
+      - name: Upload SBOMs for the release job
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          image: ${{ steps.first-tag.outputs.tag }}
-          format: 'cyclonedx-json'
-          output-file: 'sbom.cyclonedx.json'
-          upload-release-assets: false # we use immutable releases
-      # actions/attest picks the attestation type from its inputs: sbom-path
-      # yields an SBOM attestation, its absence a SLSA build provenance one.
+          name: sboms
+          path: sboms/
+          retention-days: 1
       # create-storage-record only feeds the org Linked Artifacts page, which
       # we dont use. It defaults to true whenever push-to-registry is set and
       # has only ever failed here with "no artifacts found", so turn it off
-      # rather than keep two bogus warnings per build.
-      - name: Attest SBOM
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
-        with:
-          subject-name: ghcr.io/opendefensecloud/krop-controller
-          subject-digest: ${{ steps.image.outputs.digest }}
-          sbom-path: 'sbom.cyclonedx.json'
-          push-to-registry: true
-          create-storage-record: false
+      # rather than keep a bogus warning per build.
       - name: Attest provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
