@@ -2,7 +2,9 @@
 
 **A kcp-native composition controller: one declarative blueprint → a bindable API → cross-workspace resource graphs. No Go controller per offering.**
 
-`Status: alpha` · `License: Apache-2.0` · `Go 1.26` · `Runtime: kcp` · `Image: ghcr.io/opendefense/krop-controller`
+[![Build status](https://github.com/opendefensecloud/krop-controller/actions/workflows/golang.yaml/badge.svg)](https://github.com/opendefensecloud/krop-controller/actions/workflows/golang.yaml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/opendefensecloud/krop-controller/badge)](https://scorecard.dev/viewer/?uri=github.com/opendefensecloud/krop-controller)
+[![GitHub Release](https://img.shields.io/github/v/release/opendefensecloud/krop-controller)](https://github.com/opendefensecloud/krop-controller/releases/latest)
 
 krop-controller lets a provider author **one** declarative
 `ResourceGraphDefinition` (RGD) blueprint. krop publishes it as a bindable kcp
@@ -200,7 +202,7 @@ RBAC. See [getting-started.md](docs/getting-started.md) and
 [production deploy guide](docs/guides/deploying-in-production.md) for a concise
 recipe.
 
-Image: `ghcr.io/opendefense/krop-controller`. Build artifacts locally:
+Image: `ghcr.io/opendefensecloud/krop-controller`. Build artifacts locally:
 
 ```sh
 make build          # build the controller binary

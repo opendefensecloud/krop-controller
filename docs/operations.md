@@ -76,7 +76,7 @@ is configured) and otherwise falls back to in-cluster/default config — which i
 | `controller.leaderElect` | adds `--leader-elect` when true |
 | `controller.extraArgs` | appended verbatim (use for `--zap-log-level`, `--zap-devel`, `--leader-election-namespace`, …) |
 | `kcp.kubeconfigSecret.name` / `.key` | mounts the Secret at `/etc/kcp` and sets `KUBECONFIG=/etc/kcp/<key>`; **no mount** when name is empty |
-| `image.repository` / `.tag` / `.pullPolicy` | container image (`ghcr.io/opendefense/krop-controller`; tag defaults to `appVersion`) |
+| `image.repository` / `.tag` / `.pullPolicy` | container image (`ghcr.io/opendefensecloud/krop-controller`; tag defaults to `appVersion`) |
 | `serviceAccount.create` / `.name` | the pod SA whose identity `${SA_IDENTITY}` must match |
 | `replicaCount` | pod replicas — set `>1` **only** with `controller.leaderElect=true` |
 

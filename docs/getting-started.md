@@ -39,7 +39,7 @@ what you need to run the steps.
 - A **provider workspace** under `root` (e.g. `root:krop-provider`) that the
   controller will own.
 - `kubectl` and `helm` v3.
-- The controller image: `ghcr.io/opendefense/krop-controller` (override the tag
+- The controller image: `ghcr.io/opendefensecloud/krop-controller` (override the tag
   with `--set image.tag=...`; the chart's `appVersion` is `latest`).
 
 > **Want a full, reproducible kcp-on-kind stack?** `make test-e2e`
