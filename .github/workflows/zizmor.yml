@@ -1,0 +1,30 @@
+name: Zizmor
+
+# Static analysis of the workflows: unpinned actions, template injection,
+# over-broad permissions. The pipeline is part of the attack surface here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zizmor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    name: Analyse workflows
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read          # check out the workflows being analysed
+      security-events: write  # upload the SARIF result to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0

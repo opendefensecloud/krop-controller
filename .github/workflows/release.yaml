@@ -46,7 +46,9 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ steps.get-go-version.outputs.version }}
-          cache: true
+          # This job publishes; a poisoned build cache would end up in the
+          # released binaries. Nothing here is hot enough to need the cache.
+          cache: false
 
       - name: Run tests
         run: make test
