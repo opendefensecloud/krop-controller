@@ -21,6 +21,12 @@
       "matchPackageNames": ["go", "golang"],
       "groupName": "golang version sync",
       "groupSlug": "go-version"
+    },
+    {
+      "description": "The chart's own image follows appVersion, which the release workflow sets; a pinned digest would override it in every release",
+      "matchManagers": ["helm-values"],
+      "matchPackageNames": ["ghcr.io/opendefensecloud/krop-controller"],
+      "enabled": false
     }
   ],
   "customManagers": [
