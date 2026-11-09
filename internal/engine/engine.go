@@ -175,6 +175,9 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 			}
 			observed = append(observed, obs)
 		}
+		if node.Spec.Meta.Type == graph.NodeTypeCollection {
+			alignCollectionIdentities(desired, observed)
+		}
 		node.SetObserved(observed)
 
 		if err := node.CheckReadiness(); err != nil {
@@ -189,6 +192,29 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 	res.Complete = true
 
 	return res, nil
+}
+
+// alignCollectionIdentities rewrites each desired collection item's name and
+// namespace to those of the object it was applied as (observed[i] is the apply
+// result of desired[i]).
+//
+// kro's SetObserved for a collection keeps only the observed items whose
+// identity (GVK/namespace/name) matches a desired item, in desired order.
+// Children renamed on their way to the target (the qualified provider/host
+// names, see ProviderChildName) break that match: every item would be dropped,
+// so the collection never becomes ready and everything reading it pends forever.
+// Aligning the desired identities lets kro's intersection match while observed
+// keeps the real, qualified names that dependents must reference.
+//
+// desired is kro's cached slice (GetDesired returns it without copying), so this
+// updates the runtime's own view. kro reads a collection's cached desired only
+// for that intersection and for the desired-vs-observed count in readiness, so
+// nothing else depends on the template names. A no-op for unrenamed children.
+func alignCollectionIdentities(desired, observed []*unstructured.Unstructured) {
+	for i, obs := range observed {
+		desired[i].SetName(obs.GetName())
+		desired[i].SetNamespace(obs.GetNamespace())
+	}
 }
 
 // externalCollectionSelector extracts the label selector from a resolved external
