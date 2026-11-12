@@ -74,6 +74,14 @@ var _ = Describe("krop-controller full-stack e2e (deployed pod)", Ordered, func(
 	const (
 		token    = "tok-e2e-eu-42"
 		negToken = "tok-e2e-us-99"
+		// conditionMessage is the free-text message of the AgentRequest's Ready
+		// condition; krop logs only the condition's reason code (ADR 0013).
+		conditionMessage = "e2e-condition-message-must-not-be-logged"
+	)
+	var (
+		// The demo instance's UID and its provider AgentRequest, for the log checks.
+		instanceUID string
+		agentName   string
 	)
 
 	It("publishes the blueprint's APIExport from the deployed controller", func() {
@@ -83,6 +91,11 @@ var _ = Describe("krop-controller full-stack e2e (deployed pod)", Ordered, func(
 			_, err := kcpctlNoFail(wsProvider, "get", "apiexport", exportName)
 			return err
 		})
+
+		By("asserting the publish and the instance manager start are logged at the default level")
+		waitForLog(time.Minute, levelInfo, "published APIExport",
+			map[string]string{"blueprint": "kubernetescluster", "export": exportName})
+		waitForLog(time.Minute, levelInfo, "starting instance manager", map[string]string{"export": exportName})
 	})
 
 	It("binds the export in the consumer accepting the configmaps claim", func() {
@@ -114,7 +127,6 @@ var _ = Describe("krop-controller full-stack e2e (deployed pod)", Ordered, func(
 		applyManifestToWS(wsConsumer, instanceManifest("demo", "eu"))
 
 		By("asserting the provider AgentRequest appears (provider-side, controller identity)")
-		var agentName string
 		waitFor(3*time.Minute, "provider AgentRequest created", func() error {
 			name, err := jsonpath(wsProvider, "agentrequests", "", "default", "{.items[0].metadata.name}")
 			if err != nil {
@@ -127,6 +139,29 @@ var _ = Describe("krop-controller full-stack e2e (deployed pod)", Ordered, func(
 
 			return nil
 		})
+
+		uid, err := jsonpath(wsConsumer, "kubernetescluster", "demo", "default", "{.metadata.uid}")
+		Expect(err).NotTo(HaveOccurred())
+		instanceUID = uid
+
+		By("asserting the applied AgentRequest is logged at V(2)")
+		applied := waitForLog(2*time.Minute, levelV2, "node applied",
+			map[string]string{"name": "demo", "node": "agentRequest", "child": agentName})
+		Expect(applied.Fields).To(HaveKeyWithValue("target", "provider"))
+		Expect(applied.Fields).To(HaveKeyWithValue("gvk", "fulfil.krop.opendefense.cloud/v1alpha1/AgentRequest"))
+		Expect(applied.Fields).To(HaveKeyWithValue("instanceUID", instanceUID))
+
+		By("reporting the AgentRequest not Ready, as a cloud controller would (#72)")
+		kcpctl(wsProvider, "patch", "agentrequest", agentName, "-n", "default",
+			"--subresource=status", "--type=merge",
+			"-p", fmt.Sprintf(`{"status":{"conditions":[{"type":"Ready","status":"False","reason":"Provisioning","message":%q}]}}`,
+				conditionMessage))
+
+		By("asserting the pass ends Pending on the not-ready AgentRequest with its Ready reason at V(1)")
+		pending := waitForLog(2*time.Minute, levelV1, "pass ended", map[string]string{
+			"name": "demo", "outcome": "Pending", "node": "config", "dependency": "agentRequest", "readyReason": "Provisioning",
+		})
+		Expect(pending.str("reason")).To(ContainSubstring("agentRequest"))
 
 		By("asserting the consumer ConfigMap pends until the provider status is set")
 		Consistently(func() error {
@@ -165,6 +200,28 @@ var _ = Describe("krop-controller full-stack e2e (deployed pod)", Ordered, func(
 
 			return nil
 		})
+	})
+
+	It("stays quiet at the default level while the instance is steady", func() {
+		// The instance is Complete; its 30 s heartbeat passes must show at V(1) and
+		// write nothing at the default level (ADR 0013).
+		since := time.Now()
+		waitFor(2*time.Minute, "a Complete heartbeat pass of the steady instance", func() error {
+			lines, _ := controllerLog(since)
+			if len(findLog(lines, "pass ended", map[string]string{"name": "demo", "outcome": "Complete"})) == 0 {
+				return fmt.Errorf("no Complete pass since %s", since.Format(time.RFC3339))
+			}
+
+			return nil
+		})
+		lines, _ := controllerLog(since)
+		var loud []string
+		for _, l := range lines {
+			if l.defaultLevel() {
+				loud = append(loud, l.Raw)
+			}
+		}
+		Expect(loud).To(BeEmpty(), "a steady instance must not log at the default level")
 	})
 
 	It("garbage-collects cross-workspace children on instance delete", func() {
@@ -207,6 +264,14 @@ var _ = Describe("krop-controller full-stack e2e (deployed pod)", Ordered, func(
 
 			return fmt.Errorf("instance still present: %s", out)
 		})
+
+		By("asserting each target's deleted children are logged as one default-level line")
+		provider := waitForLog(time.Minute, levelInfo, "deleted children",
+			map[string]string{"instanceUID": instanceUID, "target": "provider"})
+		Expect(provider.strs("children")).To(ConsistOf("fulfil.krop.opendefense.cloud/v1alpha1/AgentRequest default/" + agentName))
+		consumer := waitForLog(time.Minute, levelInfo, "deleted children",
+			map[string]string{"instanceUID": instanceUID, "target": "consumer"})
+		Expect(consumer.strs("children")).To(ConsistOf("/v1/ConfigMap default/eu-cluster-config"))
 	})
 
 	It("NEGATIVE: never writes the consumer ConfigMap without the accepted claim", func() {
@@ -263,5 +328,20 @@ var _ = Describe("krop-controller full-stack e2e (deployed pod)", Ordered, func(
 			return err
 		}, 6*time.Second, 500*time.Millisecond).Should(HaveOccurred(),
 			"consumer ConfigMap must NEVER appear without the accepted configmaps claim")
+	})
+
+	It("writes well-formed log lines throughout", func() {
+		lines, other := controllerLog(time.Time{})
+		Expect(lines).NotTo(BeEmpty())
+		for _, o := range other {
+			_, _ = fmt.Fprintf(GinkgoWriter, "non-JSON log line: %s\n", o)
+		}
+		for _, l := range lines {
+			Expect([]string{levelInfo, levelError, levelV1, levelV2}).To(ContainElement(l.Level), "unknown level: %s", l.Raw)
+			Expect(duplicateKey(l.Raw)).To(BeEmpty(), "duplicate key: %s", l.Raw)
+			// Error lines are single lines: no stack trace by default.
+			Expect(l.Fields).NotTo(HaveKey("stacktrace"), "stack trace: %s", l.Raw)
+			Expect(l.Raw).NotTo(ContainSubstring(conditionMessage), "condition message logged: %s", l.Raw)
+		}
 	})
 })
