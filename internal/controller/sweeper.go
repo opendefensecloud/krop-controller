@@ -125,7 +125,7 @@ func (s *Sweeper) Start(ctx context.Context) error {
 	// StaleAfter has elapsed from here (see the STARTUP GRACE INVARIANT).
 	s.startedAt = s.now()
 
-	l.Info("starting orphan sweeper", "interval", interval, "staleAfter", s.StaleAfter, "namespace", s.recordNamespace())
+	l.V(1).Info("starting orphan sweeper", "interval", interval, "staleAfter", s.StaleAfter, "namespace", s.recordNamespace())
 	for {
 		select {
 		case <-ctx.Done():
@@ -180,15 +180,22 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 			continue
 		}
 		if now.Sub(last) <= s.StaleAfter {
-			continue // still fresh: the instance is (or recently was) live.
+			// Still fresh: the instance is (or recently was) live.
+			l.V(2).Info("liveness record fresh", "record", rec.GetName(), "age", now.Sub(last).String())
+
+			continue
 		}
 
-		l.Info("orphaned instance: sweeping provider children",
-			"record", rec.GetName(), "instanceUID", instanceUID, "age", now.Sub(last).String())
+		// The record's labels name the consumer cluster and export, so sweep lines
+		// carry them and join instance lines by instanceUID (ADR 0013).
+		rl := l.WithValues("record", rec.GetName(), "instanceUID", instanceUID,
+			"cluster", rec.GetLabels()[kropengine.LabelConsumerCluster],
+			"export", rec.GetLabels()[kropengine.LabelBlueprint])
+		rl.Info("orphaned instance: sweeping provider children", "age", now.Sub(last).String())
 
-		if err := s.sweepChildren(ctx, rec, instanceUID); err != nil {
+		if err := s.sweepChildren(log.IntoContext(ctx, rl), rec, instanceUID); err != nil {
 			// Log and continue: leave the record so the next pass retries.
-			l.Error(err, "sweeping children failed; leaving record for retry", "record", rec.GetName())
+			rl.Error(err, "sweeping children failed; leaving record for retry")
 			continue
 		}
 
@@ -229,9 +236,10 @@ func (s *Sweeper) sweepChildren(ctx context.Context, rec *unstructured.Unstructu
 
 // sweepChildrenVia deletes the orphaned instance's children through one client:
 // for each GVK token in gvkRaw, list children by the instance-uid label and delete
-// them (ignoring not-found). Unparseable tokens are logged and skipped.
+// them (ignoring not-found). Unparseable tokens are logged and skipped. ctx
+// carries Sweep's per-record logger (already named and tagged).
 func (s *Sweeper) sweepChildrenVia(ctx context.Context, cl client.Client, gvkRaw, instanceUID string) error {
-	l := log.FromContext(ctx).WithName("orphan-sweeper")
+	l := log.FromContext(ctx)
 	sel := client.MatchingLabels{kropengine.LabelInstanceUID: instanceUID}
 	for token := range strings.SplitSeq(gvkRaw, ",") {
 		token = strings.TrimSpace(token)
@@ -254,7 +262,7 @@ func (s *Sweeper) sweepChildrenVia(ctx context.Context, cl client.Client, gvkRaw
 			if err := cl.Delete(ctx, child); client.IgnoreNotFound(err) != nil {
 				return fmt.Errorf("deleting %s %s: %w", gvk.Kind, child.GetName(), err)
 			}
-			l.Info("swept orphaned child", "gvk", token, "name", child.GetName())
+			l.Info("swept orphaned child", "gvk", token, "child", child.GetName(), "childNamespace", child.GetNamespace())
 		}
 	}
 

@@ -23,8 +23,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
+	"go.opendefense.cloud/krop-controller/internal/testlog"
 )
 
 const agentRequestGVKToken = "fulfil.krop.opendefense.cloud/v1alpha1/AgentRequest"
@@ -104,6 +106,10 @@ func TestSweeper_DeletesOrphanedChildrenAndRecord(t *testing.T) {
 	// Stale: lastReconciled 10 min ago; its AgentRequest must be swept.
 	staleRec := mkRecord("krop-live-stale", "uid-1",
 		now.Add(-10*time.Minute).Format(time.RFC3339))
+	staleLabels := staleRec.GetLabels()
+	staleLabels[kropengine.LabelConsumerCluster] = "c1"
+	staleLabels[kropengine.LabelBlueprint] = "agents.example.com"
+	staleRec.SetLabels(staleLabels)
 	staleChild := mkAgentRequest("child-1", "uid-1")
 
 	// Fresh: lastReconciled now; its AgentRequest must survive.
@@ -122,8 +128,32 @@ func TestSweeper_DeletesOrphanedChildrenAndRecord(t *testing.T) {
 		// Started well before the grace window so sweeping is active.
 		startedAt: now.Add(-1 * time.Hour),
 	}
-	if err := s.Sweep(context.Background()); err != nil {
+	lg, sink := testlog.New(2)
+	if err := s.Sweep(log.IntoContext(context.Background(), lg)); err != nil {
 		t.Fatalf("Sweep: %v", err)
+	}
+
+	// Deletions are logged at the default level and join instance lines by
+	// instanceUID (ADR 0013); a fresh record is a V(2) decision.
+	orphaned := sink.Find("orphaned instance: sweeping provider children")
+	if len(orphaned) != 1 {
+		t.Fatalf("want 1 orphaned instance line, got %d: %s", len(orphaned), sink.Raw())
+	}
+	if v := orphaned[0].Values; orphaned[0].Level != 0 || v["record"] != "krop-live-stale" ||
+		v["instanceUID"] != "uid-1" || v["cluster"] != "c1" || v["export"] != "agents.example.com" {
+		t.Fatalf("orphaned instance line wrong: level=%d %+v", orphaned[0].Level, v)
+	}
+	swept := sink.Find("swept orphaned child")
+	if len(swept) != 1 {
+		t.Fatalf("want 1 swept child line, got %d: %s", len(swept), sink.Raw())
+	}
+	if v := swept[0].Values; swept[0].Level != 0 || v["gvk"] != agentRequestGVKToken || v["child"] != "child-1" ||
+		v["instanceUID"] != "uid-1" || v["cluster"] != "c1" {
+		t.Fatalf("swept child line wrong: level=%d %+v", swept[0].Level, v)
+	}
+	fresh := sink.Find("liveness record fresh")
+	if len(fresh) != 1 || fresh[0].Level != 2 || fresh[0].Values["record"] != "krop-live-fresh" {
+		t.Fatalf("want 1 V(2) fresh line for krop-live-fresh, got %+v", fresh)
 	}
 
 	if exists(t, cl, configMapGVK, "krop-live-stale") {
@@ -234,8 +264,14 @@ func TestSweeper_SkipsFreshAndUnparseable(t *testing.T) {
 		// Started well before the grace window so sweeping is active.
 		startedAt: now.Add(-1 * time.Hour),
 	}
-	if err := s.Sweep(context.Background()); err != nil {
+	lg, sink := testlog.New(0)
+	if err := s.Sweep(log.IntoContext(context.Background(), lg)); err != nil {
 		t.Fatalf("Sweep: %v", err)
+	}
+
+	// An unparseable record is an anomaly: it stays visible at the default level.
+	if n := len(sink.Find("skipping unparseable liveness record")); n != 2 {
+		t.Fatalf("want 2 default-level unparseable lines, got %d: %s", n, sink.Raw())
 	}
 
 	if !exists(t, cl, configMapGVK, "krop-live-garbage") {
