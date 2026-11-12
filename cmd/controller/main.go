@@ -34,6 +34,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
@@ -97,6 +98,8 @@ const (
 // servedBlueprint is what the Registrar records on publish and the per-export
 // manager needs to serve: the compiled graph and the generated instance kind.
 type servedBlueprint struct {
+	// name is the blueprint (RGD) object name, the "blueprint" log field.
+	name    string
 	graph   *krograph.Graph
 	gvk     schema.GroupVersionKind
 	routing map[string]kropengine.Target
@@ -296,7 +299,7 @@ func run() error {
 	// startFn re-reads the registry and picks up the new graph (registry.Set runs
 	// before the Stop+Ensure, so the restarted startFn observes the update).
 	startFn := func(ctx context.Context, exportName string) error {
-		exportLog := entryLog.WithValues("apiExport", exportName)
+		exportLog := entryLog.WithValues("export", exportName)
 
 		sb, ok := registry.Get(exportName)
 		if !ok {
@@ -369,8 +372,6 @@ func run() error {
 		}
 
 		reconcileFn := mcreconcile.Func(func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-			l := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "name", req.Name)
-
 			cl, err := imgr.GetCluster(ctx, req.ClusterName)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("getting cluster %q: %w", req.ClusterName, err)
@@ -380,11 +381,11 @@ func run() error {
 			if err != nil {
 				return ctrl.Result{}, err
 			}
+			// The reconciler logs why the pass ended at V(1) (ADR 0013); nothing is
+			// logged here so the default level stays quiet.
 			if res.Requeue {
-				l.Info("reconciled; requeueing", "ready", res.Ready)
 				return ctrl.Result{RequeueAfter: requeueInterval}, nil
 			}
-			l.Info("reconciled", "ready", res.Ready)
 
 			return ctrl.Result{}, nil
 		})
@@ -401,6 +402,11 @@ func run() error {
 		if err := mcbuilder.ControllerManagedBy(imgr).
 			Named("krop-instance-" + exportName).
 			WithOptions(mccontroller.Options{SkipNameValidation: &skipNameValidation}).
+			// Tag every instance line, including controller-runtime's own error
+			// line, with the blueprint and the instance's identity (ADR 0013).
+			WithLogConstructor(kropctrl.InstanceLogConstructor(
+				imgr.GetLogger().WithValues("controller", "krop-instance-"+exportName),
+				sb.name, exportName, sb.gvk.Kind)).
 			For(newInstance(sb.gvk)).
 			Complete(reconcileFn); err != nil {
 			return fmt.Errorf("building krop-instance controller for %q: %w", exportName, err)
@@ -423,9 +429,9 @@ func run() error {
 		Workspace: workspace,
 		Cache:     registrar.NewGraphCache(),
 		Source:    graphSource,
-		OnPublished: func(_, exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, routing map[string]kropengine.Target, changed bool) {
+		OnPublished: func(blueprint, exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, routing map[string]kropengine.Target, changed bool) {
 			// Always update the served graph so a restarted startFn reads the latest.
-			registry.Set(exportName, servedBlueprint{graph: g, gvk: instanceGVK, routing: routing})
+			registry.Set(exportName, servedBlueprint{name: blueprint, graph: g, gvk: instanceGVK, routing: routing})
 			// When the compiled graph CHANGED (new blueprint or spec edit), stop the
 			// running manager first so Ensure restarts it and its reconciler closure
 			// re-reads the updated registry graph — otherwise a live spec edit would
@@ -448,6 +454,16 @@ func run() error {
 	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&kropv1alpha1.ResourceGraphDefinition{}).
 		Named("krop-registrar").
+		// Tag registrar lines, including controller-runtime's error line, with
+		// the blueprint (RGD) name (ADR 0013).
+		WithLogConstructor(func(req *reconcile.Request) logr.Logger {
+			l := mgr.GetLogger().WithValues("controller", "krop-registrar")
+			if req != nil {
+				l = l.WithValues("blueprint", req.Name)
+			}
+
+			return l
+		}).
 		Complete(reconcile.Func(reg.Reconcile)); err != nil {
 		return fmt.Errorf("building registrar controller: %w", err)
 	}

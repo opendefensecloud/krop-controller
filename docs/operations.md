@@ -115,7 +115,35 @@ leader election runs multiple active managers and is unsupported.
 - **Logs.** Structured zap; production JSON by default. Tune with `--zap-log-level`
   / `--zap-devel` via `controller.extraArgs`. The entrypoint logs the effective
   `version`, bind addresses, leader-election settings, and the derived provider
-  `workspace` on startup.
+  `workspace` on startup. Levels and fields follow
+  [ADR 0013](decisions/0013-leveled-structured-logging.md):
+
+  | `--zap-log-level` | Shows | Typical lines |
+  | --- | --- | --- |
+  | `info` (default) | errors, rare lifecycle, deletions krop decides on | reconcile errors; `published APIExport`; `starting` / `stopping instance manager`; `pruned child`, `deleted child`, `swept orphaned child` |
+  | `debug` (= V(1)) | why each instance pass ended | `pass ended` with `outcome` (`Complete`, `NotReady`, `Pending`, `ExternalNotFound`, `Failed`), `node`, `reason`; `APIExport unchanged` |
+  | `2` (= V(2)) | what each pass did | `node applied` / `node read` / `node skipped` per node; `liveness record fresh` |
+
+  Fields are the same in every component:
+
+  | Field | Meaning |
+  | --- | --- |
+  | `blueprint` | blueprint (RGD) name, e.g. `bucket` |
+  | `export` | APIExport name, e.g. `buckets.storage.api.opendefense.cloud` |
+  | `kind`, `cluster`, `namespace`, `name`, `instanceUID` | the instance: its kind, consumer logical cluster, namespace, name and UID |
+  | `node`, `target`, `gvk`, `child`, `childNamespace`, `children` | the blueprint resource id, its target (`consumer` / `provider` / `host`), the child's `group/version/Kind` and its final (qualified) name |
+  | `outcome`, `reason`, `ready` | how a pass or node ended, and kro's or the API server's message |
+
+  Logs never contain object content, only names, kinds and messages. `kubectl logs`
+  shows the same JSON. In Loki (adjust the stream selector to your log shipper's labels):
+
+  ```logql
+  # Everything about one ordered Bucket
+  {app_kubernetes_io_name="krop-controller"} | json | kind="Bucket" | namespace="team-a" | name="logs"
+
+  # Every pass of the bucket blueprint that is waiting on a dependency (needs debug or 2)
+  {app_kubernetes_io_name="krop-controller"} | json | blueprint="bucket" | outcome="Pending"
+  ```
 - **Status conditions** — the primary operational signal:
 
   | Object | Condition | Meaning |
