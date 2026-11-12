@@ -3,6 +3,7 @@
 /build/
 /dist/
 common.mk
+.common.mk-*
 *.test
 coverprofile
 /.pre-commit-config.yaml

@@ -1,5 +1,5 @@
 # Include ODC common make targets
-DEV_KIT_VERSION := v1.0.15
+DEV_KIT_VERSION := v4.0.0
 -include common.mk
 common.mk:
 	curl --fail -sSL https://raw.githubusercontent.com/opendefensecloud/dev-kit/$(DEV_KIT_VERSION)/common.mk -o common.mk.download && \
@@ -27,7 +27,7 @@ DEV_TAG ?= dev.$(TIMESTAMP)
 export DEV_TAG
 
 LICENSE := apache
-LICENSE_COMMENT := opendefense contributors
+LICENSE_COMMENT := BWI GmbH and krop-controller contributors
 
 ##@ Development
 

@@ -12,7 +12,7 @@
     };
 
     dev-kit = {
-      url = "github:opendefensecloud/dev-kit";
+      url = "github:opendefensecloud/dev-kit/v4.0.0";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.go-overlay.follows = "go-overlay";
       inputs.flake-utils.follows = "flake-utils";
@@ -24,9 +24,14 @@
       {
         devShells.default = dev-kit.lib.mkShell {
           inherit system;
-          goVersion = "1.27.3";
+          goVersion = "1.27.4";
           # Private module host: skip the public proxy/sumdb for our GitLab modules.
           env.GOPRIVATE = "gitlab.opendefense.cloud";
+          # dev-kit's hook ends on `[[ -f …pre-commit.legacy ]] && rm`, which exits 1
+          # when the file is absent and fails `direnv reload`; end on a command that succeeds.
+          shellHook = ''
+            export IN_NIX_SHELL=1
+          '';
         };
       }
     );
