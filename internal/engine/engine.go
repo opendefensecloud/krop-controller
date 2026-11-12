@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // Engine drives kro's runtime for a single instance: it resolves, routes,
@@ -36,8 +37,31 @@ type Engine struct{}
 // New returns a stateless Engine.
 func New() *Engine { return &Engine{} }
 
+// Outcome says why a reconcile pass ended (ADR 0013).
+type Outcome string
+
+const (
+	// OutcomeComplete: every non-ignored node was processed and is ready.
+	OutcomeComplete Outcome = "Complete"
+	// OutcomeNotReady: every node was processed, at least one is not ready yet.
+	OutcomeNotReady Outcome = "NotReady"
+	// OutcomePending: a node's dependency or data is not available yet.
+	OutcomePending Outcome = "Pending"
+	// OutcomeExternalNotFound: an external ref's object does not exist yet.
+	OutcomeExternalNotFound Outcome = "ExternalNotFound"
+	// OutcomeFailed: the pass ended on an error that is not data pending.
+	OutcomeFailed Outcome = "Failed"
+)
+
 // Result summarizes one reconcile pass.
 type Result struct {
+	// Outcome is why the pass ended; set on every return, including error returns.
+	Outcome Outcome
+	// Node is the node that ended the pass; for NotReady, the first node that was
+	// not ready. Empty for Complete.
+	Node string
+	// Reason is kro's (or the API server's) message for Node. Empty for Complete.
+	Reason string
 	// Ready is true when every included node passed CheckReadiness.
 	Ready bool
 	// Requeue is true when a node is not yet ready or a dependency is pending.
@@ -59,13 +83,16 @@ type Result struct {
 // rolls back: partial application is reported via Result and a requeue.
 func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers map[Target]Applier, readers map[Target]Reader, routing map[string]Target) (Result, error) {
 	res := Result{Ready: true}
+	l := log.FromContext(ctx)
 
 	for _, node := range rt.Nodes() {
 		ignored, err := node.IsIgnored()
 		if err != nil {
-			return res, fmt.Errorf("node %s: includeWhen: %w", node.Spec.Meta.ID, err)
+			return res, res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: includeWhen: %w", node.Spec.Meta.ID, err))
 		}
 		if ignored {
+			l.V(nodeLogLevel).Info("node skipped", "node", node.Spec.Meta.ID, "reason", "includeWhen false")
+
 			continue
 		}
 
@@ -83,6 +110,7 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 				// does not prune the still-desired children this pass skipped.
 				res.Ready = false
 				res.Requeue = true
+				res.ended(OutcomePending, node.Spec.Meta.ID, err)
 
 				//nolint:nilerr // unresolved dependency is normal convergence: signal NotReady+Requeue, not a hard error.
 				return res, nil
@@ -91,7 +119,7 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 			// Genuine CEL/type error: return it so the failure is surfaced (logged,
 			// counted) instead of silently requeueing forever. A hard error returns
 			// before res.Complete is set — intentional; nothing should prune.
-			return res, fmt.Errorf("node %s: %w", node.Spec.Meta.ID, err)
+			return res, res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: %w", node.Spec.Meta.ID, err))
 		}
 
 		// Every object of a node shares the node's routing target.
@@ -104,7 +132,7 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 			// target's Reader and feed it to the runtime. It is never applied.
 			reader, ok := readers[target]
 			if !ok {
-				return res, fmt.Errorf("node %s: no reader configured for target %q", node.Spec.Meta.ID, target)
+				return res, res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: no reader configured for target %q", node.Spec.Meta.ID, target))
 			}
 			if len(desired) == 0 { // nothing to read (empty desired) — skip
 				continue
@@ -116,16 +144,17 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 				// res.Complete is set so prune stays disabled while the dependency
 				// is pending — the same convergence rule as ErrDataPending above.
 				res.Ready, res.Requeue = false, true
+				res.ended(OutcomeExternalNotFound, node.Spec.Meta.ID, err)
 
 				return res, nil
 			}
 			if err != nil {
-				return res, fmt.Errorf("node %s: external get: %w", node.Spec.Meta.ID, err)
+				return res, res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: external get: %w", node.Spec.Meta.ID, err))
 			}
 			node.SetObserved([]*unstructured.Unstructured{obj})
-			if node.CheckReadiness() != nil {
-				res.Ready, res.Requeue = false, true
-			}
+			readyErr := node.CheckReadiness()
+			res.notReady(node.Spec.Meta.ID, readyErr)
+			logNode(l, "node read", node.Spec.Meta.ID, target, d.GroupVersionKind(), []*unstructured.Unstructured{obj}, false, readyErr)
 
 			continue
 		case graph.NodeTypeExternalCollection:
@@ -133,7 +162,7 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 			// resolved selector through the target's Reader and feed them in.
 			reader, ok := readers[target]
 			if !ok {
-				return res, fmt.Errorf("node %s: no reader configured for target %q", node.Spec.Meta.ID, target)
+				return res, res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: no reader configured for target %q", node.Spec.Meta.ID, target))
 			}
 			if len(desired) == 0 { // nothing to read (empty desired) — skip
 				continue
@@ -141,7 +170,7 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 			d := desired[0]
 			selector, err := externalCollectionSelector(d)
 			if err != nil {
-				return res, fmt.Errorf("node %s: %w", node.Spec.Meta.ID, err)
+				return res, res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: %w", node.Spec.Meta.ID, err))
 			}
 			// Namespace comes from the resolved template; a namespaced kind with an
 			// empty namespace lists across all namespaces, cluster-scoped is always "".
@@ -151,12 +180,12 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 			}
 			items, err := reader.List(ctx, d.GroupVersionKind(), ns, selector)
 			if err != nil {
-				return res, fmt.Errorf("node %s: external list: %w", node.Spec.Meta.ID, err)
+				return res, res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: external list: %w", node.Spec.Meta.ID, err))
 			}
 			node.SetObserved(items)
-			if node.CheckReadiness() != nil {
-				res.Ready, res.Requeue = false, true
-			}
+			readyErr := node.CheckReadiness()
+			res.notReady(node.Spec.Meta.ID, readyErr)
+			logNode(l, "node read", node.Spec.Meta.ID, target, d.GroupVersionKind(), items, true, readyErr)
 
 			continue
 		}
@@ -165,33 +194,69 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 		// node to its routing target and read the result back into the runtime.
 		applier, ok := appliers[target]
 		if !ok {
-			return res, fmt.Errorf("node %s: no applier configured for target %q", node.Spec.Meta.ID, target)
+			return res, res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: no applier configured for target %q", node.Spec.Meta.ID, target))
 		}
 		observed := make([]*unstructured.Unstructured, 0, len(desired))
 		for _, obj := range desired {
 			obs, err := applier.Apply(ctx, obj)
 			if err != nil {
-				return res, fmt.Errorf("node %s: apply to %s: %w", node.Spec.Meta.ID, target, err)
+				return res, res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: apply to %s: %w", node.Spec.Meta.ID, target, err))
 			}
 			observed = append(observed, obs)
 		}
-		if node.Spec.Meta.Type == graph.NodeTypeCollection {
+		collection := node.Spec.Meta.Type == graph.NodeTypeCollection
+		if collection {
 			alignCollectionIdentities(desired, observed)
 		}
 		node.SetObserved(observed)
 
-		if err := node.CheckReadiness(); err != nil {
-			// Not an error: the child exists but isn't ready yet.
-			res.Ready = false
-			res.Requeue = true
-		}
+		// A not-ready child is not an error: it exists but isn't ready yet.
+		readyErr := node.CheckReadiness()
+		res.notReady(node.Spec.Meta.ID, readyErr)
+		logNode(l, "node applied", node.Spec.Meta.ID, target, node.Spec.Template.GroupVersionKind(), observed, collection, readyErr)
 	}
 
 	// Every non-ignored node was resolved and applied without a pending-dependency
 	// early return: the applied set is the complete desired set, so prune is safe.
 	res.Complete = true
+	if res.Ready {
+		res.Outcome = OutcomeComplete
+	} else {
+		res.Outcome = OutcomeNotReady
+	}
 
 	return res, nil
+}
+
+// notReady records a node whose readiness check failed: the pass is not ready
+// and requeues, and the first such node is kept as the NotReady node/reason.
+func (r *Result) notReady(nodeID string, readyErr error) {
+	if readyErr == nil {
+		return
+	}
+	r.Ready, r.Requeue = false, true
+	if r.Node == "" {
+		r.Node, r.Reason = nodeID, readyErr.Error()
+	}
+}
+
+// ended records why the pass stopped at nodeID, replacing any not-ready node
+// recorded earlier in the pass.
+func (r *Result) ended(outcome Outcome, nodeID string, err error) {
+	r.Outcome, r.Node, r.Reason = outcome, nodeID, err.Error()
+}
+
+// failed records an error return at nodeID and returns err unchanged. An error
+// that wraps kro's ErrDataPending (e.g. includeWhen on a dependency that isn't
+// ready) is still returned, but its outcome is Pending, not Failed.
+func (r *Result) failed(nodeID string, err error) error {
+	outcome := OutcomeFailed
+	if errors.Is(err, runtime.ErrDataPending) {
+		outcome = OutcomePending
+	}
+	r.ended(outcome, nodeID, err)
+
+	return err
 }
 
 // alignCollectionIdentities rewrites each desired collection item's name and
