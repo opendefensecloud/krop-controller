@@ -121,7 +121,7 @@ leader election runs multiple active managers and is unsupported.
 
   | `--zap-log-level` | Shows | Typical lines |
   | --- | --- | --- |
-  | `info` (default) | errors, rare lifecycle, deletions krop decides on | reconcile errors; `published APIExport`, `deleted APIExport`; `starting` / `stopping instance manager`; `pruned children`, `deleted children`, `swept orphaned children` (one line per instance pass and target) |
+  | `info` (default) | errors, rare lifecycle, deletions krop decides on | reconcile errors; `published APIExport`, `deleted APIExport` (or `deleted APIResourceSchemas` when the export was already gone); `starting` / `stopping instance manager`; `pruned children`, `deleted children`, `swept orphaned children` (one line per instance pass and target) |
   | `debug` (= V(1)) | why each instance pass ended | `pass ended` with `outcome` (`Complete`, `NotReady`, `Pending`, `ExternalNotFound`, `Failed`), `node`, `reason`; `APIExport unchanged` |
   | `2` (= V(2)) | what each pass did | `node applied` / `node read` / `node skipped` per node; `liveness record fresh` |
 
