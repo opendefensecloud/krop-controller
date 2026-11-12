@@ -25,8 +25,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
+	"go.opendefense.cloud/krop-controller/internal/testlog"
 )
 
 var testGVK = schema.GroupVersionKind{Group: "krop.opendefense.cloud", Version: "v1alpha1", Kind: "KubernetesCluster"}
@@ -127,8 +129,19 @@ func TestPruneChildren_DeletesStaleKeepsApplied(t *testing.T) {
 			Namespace: "default", Name: "desired-child",
 		}},
 	}
-	if err := r.pruneChildren(context.Background(), consumer, uid, applied); err != nil {
+	lg, sink := testlog.New(0)
+	if err := r.pruneChildren(log.IntoContext(context.Background(), lg), consumer, uid, applied); err != nil {
 		t.Fatalf("pruneChildren: %v", err)
+	}
+
+	// Each krop-initiated delete is logged at the default level; kept children are not.
+	pruned := sink.Find("pruned child")
+	if len(pruned) != 1 {
+		t.Fatalf("want 1 pruned child line, got %d: %s", len(pruned), sink.Raw())
+	}
+	if v := pruned[0].Values; pruned[0].Level != 0 || v["target"] != "consumer" ||
+		v["gvk"] != "/v1/ConfigMap" || v["child"] != "stale-child" {
+		t.Fatalf("pruned child line wrong: level=%d %+v", pruned[0].Level, v)
 	}
 
 	// stale-child must be gone.
@@ -143,6 +156,30 @@ func TestPruneChildren_DeletesStaleKeepsApplied(t *testing.T) {
 	got.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
 	if err := consumer.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "desired-child"}, got); err != nil {
 		t.Fatalf("desired-child was wrongly pruned: %v", err)
+	}
+}
+
+func TestDeleteChildren_LogsEachDelete(t *testing.T) {
+	const uid = "uid-1"
+	consumer := fake.NewClientBuilder().WithObjects(mkLabeledCM("child", uid)).Build()
+	r := &Reconciler{
+		Graph:          graphWithConfigMapNode(),
+		ProviderClient: fake.NewClientBuilder().Build(),
+		InstanceGVK:    testGVK,
+		BlueprintName:  "bp",
+	}
+
+	lg, sink := testlog.New(0)
+	if err := r.deleteChildren(log.IntoContext(context.Background(), lg), consumer, uid); err != nil {
+		t.Fatalf("deleteChildren: %v", err)
+	}
+	deleted := sink.Find("deleted child")
+	if len(deleted) != 1 {
+		t.Fatalf("want 1 deleted child line, got %d: %s", len(deleted), sink.Raw())
+	}
+	if v := deleted[0].Values; deleted[0].Level != 0 || v["target"] != "consumer" ||
+		v["gvk"] != "/v1/ConfigMap" || v["child"] != "child" {
+		t.Fatalf("deleted child line wrong: level=%d %+v", deleted[0].Level, v)
 	}
 }
 

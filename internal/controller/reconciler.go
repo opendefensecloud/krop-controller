@@ -32,6 +32,7 @@ import (
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 )
@@ -103,6 +104,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	if err := consumerClient.Get(ctx, key, inst); err != nil {
 		return kropengine.Result{}, client.IgnoreNotFound(err)
 	}
+	// Tag every later line (engine, prune, GC) with the instance UID, which joins
+	// instance lines with the orphan sweeper's (ADR 0013).
+	l := log.FromContext(ctx).WithValues("instanceUID", string(inst.GetUID()))
+	ctx = log.IntoContext(ctx, l)
 
 	// Deletion: run cross-workspace GC, then drop the finalizer.
 	if inst.GetDeletionTimestamp() != nil {
@@ -189,6 +194,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	}
 
 	res, err := kropengine.New().Reconcile(ctx, rt, appliers, readers, r.Routing)
+	// Why this pass ended, also on an error return (ADR 0013: V(1)).
+	l.V(1).Info("pass ended", "outcome", res.Outcome, "node", res.Node, "reason", res.Reason, "ready", res.Ready)
 	if err != nil {
 		return res, err
 	}
@@ -340,9 +347,11 @@ func (r *Reconciler) deleteChildren(ctx context.Context, consumerClient client.C
 				return fmt.Errorf("listing %s children: %w", gvk.Kind, err)
 			}
 			for i := range list.Items {
-				if err := cl.Delete(ctx, &list.Items[i]); client.IgnoreNotFound(err) != nil {
-					return fmt.Errorf("deleting %s %s: %w", gvk.Kind, list.Items[i].GetName(), err)
+				item := &list.Items[i]
+				if err := cl.Delete(ctx, item); client.IgnoreNotFound(err) != nil {
+					return fmt.Errorf("deleting %s %s: %w", gvk.Kind, item.GetName(), err)
 				}
+				logChildDeleted(ctx, "deleted child", target, gvk, item)
 			}
 		}
 	}
@@ -385,11 +394,19 @@ func (r *Reconciler) pruneChildren(ctx context.Context, consumerClient client.Cl
 				if err := cl.Delete(ctx, item); client.IgnoreNotFound(err) != nil {
 					return fmt.Errorf("pruning %s %s: %w", gvk.Kind, item.GetName(), err)
 				}
+				logChildDeleted(ctx, "pruned child", target, gvk, item)
 			}
 		}
 	}
 
 	return nil
+}
+
+// logChildDeleted logs a child deletion krop decided on its own (prune or
+// instance-deletion GC) at the default level, so providers can see it (ADR 0013).
+func logChildDeleted(ctx context.Context, msg string, target kropengine.Target, gvk schema.GroupVersionKind, child *unstructured.Unstructured) {
+	log.FromContext(ctx).Info(msg, "target", string(target), "gvk", kropengine.GVKString(gvk),
+		"child", child.GetName(), "childNamespace", child.GetNamespace())
 }
 
 // childGVKs returns the distinct child GVKs of the given target from the graph.
