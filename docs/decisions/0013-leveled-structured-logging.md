@@ -41,9 +41,10 @@ of field names. Full detail: [leveled-logging design](../superpowers/specs/2026-
   `kind`, `cluster`, `namespace`, `name`, `instanceUID`; per-node lines add `node`,
   `target`, `gvk`, `child`, `reason`. The instance logger is installed via the controller
   builder's `WithLogConstructor` so controller-runtime's own error lines carry it too.
-- **No object content.** Lines never include observed or desired object values (children
-  may carry secrets in status). The one exception is the reason code of a not-ready
-  object's `Ready` condition (see the amendment below).
+- **No object content.** krop never writes observed or desired object values into its
+  lines (children may carry secrets in status). The one exception is the reason code of
+  a not-ready object's `Ready` condition (see the amendment below). Error messages from
+  kro or the API server are logged as they are and may quote field values.
 
 The engine's `Result` records the pass outcome, ending node and reason; the reconciler
 logs from it. Logging does not change reconcile behaviour.

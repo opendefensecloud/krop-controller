@@ -149,10 +149,13 @@ leader election runs multiple active managers and is unsupported.
   krop sets this default itself, so `--zap-devel` no longer adds stack traces to
   warnings either; pass `--zap-stacktrace-level=warn` with it for that.
 
-  Logs never contain object content, only names, kinds, messages and the reason code
-  of a not-ready `Ready` condition. `kubectl logs`
-  shows the same JSON. In Loki, adjust the stream selector to your log shipper's
-  labels. Shippers usually add `namespace` and `cluster` as **stream labels** (the
+  krop never logs object content itself: only names, kinds, messages and the reason
+  code of a not-ready `Ready` condition. Error messages from kro or the API server
+  are logged as they are and may quote field values
+  ([ADR 0013](decisions/0013-leveled-structured-logging.md)).
+
+  `kubectl logs` shows the same JSON. In Loki, adjust the stream selector to your log
+  shipper's labels. Shippers usually add `namespace` and `cluster` as **stream labels** (the
   krop pod's own namespace and cluster), and a plain `| json` then renames the
   instance's fields to `namespace_extracted` / `cluster_extracted`. Extract the
   fields you filter on explicitly under names of their own:
