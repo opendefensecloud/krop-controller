@@ -270,45 +270,41 @@ func (r *Result) ended(outcome Outcome, nodeID string, err error) {
 }
 
 // waitingOn records which not-ready dependency a data-pending err waits for, and
-// that dependency's Ready reason. kro names one not-ready dependency in its
-// message; when the message format is not recognised, the first not-ready
-// dependency in the node's dependency order is used. Nothing is recorded when err
-// is not data pending, or when no dependency is not ready (the pass waits on a
-// field, not on readiness).
+// that dependency's Ready reason. kro names the dependency in its message
+// ("dependent node %q not ready", "includeWhen dependency %q not ready"; the
+// format is pinned by TestReconcile_Pending_DependencyMatchesReason). Only a
+// dependency named there and found not ready in this pass is recorded, so the
+// field never contradicts the reason: nothing is recorded when err is not data
+// pending, or when it waits on a field rather than on a dependency's readiness.
 func (r *Result) waitingOn(deps []string, notReady map[string]string, err error) {
 	if !errors.Is(err, runtime.ErrDataPending) {
 		return
 	}
-	var first string
+	msg := err.Error()
 	for _, dep := range deps {
 		if _, ok := notReady[dep]; !ok {
 			continue
 		}
-		msg := err.Error()
 		if strings.Contains(msg, fmt.Sprintf("dependent node %q not ready", dep)) ||
 			strings.Contains(msg, fmt.Sprintf("includeWhen dependency %q not ready", dep)) {
 			r.Dependency, r.ReadyReason = dep, notReady[dep]
 
 			return
 		}
-		if first == "" {
-			first = dep
-		}
-	}
-	if first != "" {
-		r.Dependency, r.ReadyReason = first, notReady[first]
 	}
 }
 
 // failed records an error return at nodeID and returns err unchanged. An error
 // that wraps kro's ErrDataPending (e.g. includeWhen on a dependency that isn't
-// ready) is still returned, but its outcome is Pending, not Failed.
+// ready) is still returned, but its outcome is Pending, not Failed. The pass is
+// not ready either way, so its line does not claim ready=true.
 func (r *Result) failed(nodeID string, err error) error {
 	outcome := OutcomeFailed
 	if errors.Is(err, runtime.ErrDataPending) {
 		outcome = OutcomePending
 	}
 	r.ended(outcome, nodeID, err)
+	r.Ready = false
 
 	return err
 }

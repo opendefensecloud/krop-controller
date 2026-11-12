@@ -162,8 +162,8 @@ func TestReconcile_Outcome_FailedOnGenuineError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("want an error, got nil (res=%+v)", res)
 	}
-	if res.Outcome != OutcomeFailed || res.Node != "config" || res.Reason == "" {
-		t.Fatalf("want Failed on config with a reason, got %+v", res)
+	if res.Outcome != OutcomeFailed || res.Node != "config" || res.Reason == "" || res.Ready {
+		t.Fatalf("want Failed on config with a reason and not ready, got %+v", res)
 	}
 }
 
@@ -177,8 +177,8 @@ func TestReconcile_IncludeWhenPending_OutcomePendingStillErrors(t *testing.T) {
 	if !errors.Is(err, runtime.ErrDataPending) {
 		t.Fatalf("want ErrDataPending in the chain, got %v", err)
 	}
-	if res.Outcome != OutcomePending || res.Node != "subnet" {
-		t.Fatalf("want Pending on subnet, got %+v", res)
+	if res.Outcome != OutcomePending || res.Node != "subnet" || res.Ready {
+		t.Fatalf("want Pending on subnet and not ready, got %+v", res)
 	}
 }
 
@@ -422,6 +422,28 @@ func TestReconcile_Pending_DependencyMatchesReason(t *testing.T) {
 		if res.Node != "subnet" || res.Dependency == "" ||
 			!strings.Contains(res.Reason, fmt.Sprintf("dependent node %q", res.Dependency)) {
 			t.Fatalf("dependency %q does not match reason %q", res.Dependency, res.Reason)
+		}
+	}
+}
+
+// A data-pending error that names no dependency (e.g. an includeWhen expression on
+// a missing field of a ready dependency) must not be attributed to some other
+// not-ready dependency: the reason would then contradict the dependency field.
+func TestWaitingOn_OnlyTheDependencyKroNames(t *testing.T) {
+	notReady := map[string]string{"bucket": "UpdateFailed"}
+	for _, tc := range []struct {
+		desc, wantDep string
+		err           error
+	}{
+		{"names bucket", "bucket", fmt.Errorf("node %q: dependent node %q not ready: x (%w)", "sa", "bucket", runtime.ErrDataPending)},
+		{"includeWhen names bucket", "bucket", fmt.Errorf("includeWhen dependency %q not ready: x (%w)", "bucket", runtime.ErrDataPending)},
+		{"names no dependency", "", fmt.Errorf("includeWhen %q: no such key: email (%w)", "${vpc.status.email != ''}", runtime.ErrDataPending)},
+		{"names a ready dependency", "", fmt.Errorf("node %q: dependent node %q not ready: x (%w)", "sa", "vpc", runtime.ErrDataPending)},
+	} {
+		var r Result
+		r.waitingOn([]string{"vpc", "bucket"}, notReady, tc.err)
+		if r.Dependency != tc.wantDep {
+			t.Errorf("%s: dependency = %q, want %q", tc.desc, r.Dependency, tc.wantDep)
 		}
 	}
 }
