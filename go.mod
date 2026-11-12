@@ -6,7 +6,7 @@ require (
 	github.com/go-logr/logr v1.4.4
 	github.com/kcp-dev/logicalcluster/v3 v3.0.5
 	github.com/kcp-dev/multicluster-provider v0.8.0
-	github.com/kcp-dev/multicluster-provider/client v0.8.0
+	github.com/kcp-dev/multicluster-provider/client v0.9.0
 	github.com/kcp-dev/sdk v0.33.4
 	github.com/kubernetes-sigs/kro v0.9.4
 	github.com/onsi/ginkgo/v2 v2.33.1
