@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/kubernetes-sigs/kro/pkg/graph"
 	"github.com/kubernetes-sigs/kro/pkg/runtime"
@@ -62,6 +63,13 @@ type Result struct {
 	Node string
 	// Reason is kro's (or the API server's) message for Node. Empty for Complete.
 	Reason string
+	// Dependency is, for Pending, the not-ready dependency Node waits for. Empty
+	// otherwise, and when the pass pends on data rather than on readiness.
+	Dependency string
+	// ReadyReason is the reason code of the Ready condition of the not-ready
+	// object: Dependency's when set, else Node's (NotReady). Empty when that object
+	// has no such condition or its reason is not a plain code (see readyReason).
+	ReadyReason string
 	// Ready is true when every included node passed CheckReadiness.
 	Ready bool
 	// Requeue is true when a node is not yet ready or a dependency is pending.
@@ -84,11 +92,17 @@ type Result struct {
 func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers map[Target]Applier, readers map[Target]Reader, routing map[string]Target) (Result, error) {
 	res := Result{Ready: true}
 	l := log.FromContext(ctx)
+	// The Ready reason of every node found not ready so far this pass, so a later
+	// node pending on one of them can name it and its reason.
+	notReady := map[string]string{}
 
 	for _, node := range rt.Nodes() {
 		ignored, err := node.IsIgnored()
 		if err != nil {
-			return res, res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: includeWhen: %w", node.Spec.Meta.ID, err))
+			err = res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: includeWhen: %w", node.Spec.Meta.ID, err))
+			res.waitingOn(node.Spec.Meta.Dependencies, notReady, err)
+
+			return res, err
 		}
 		if ignored {
 			l.V(nodeLogLevel).Info("node skipped", "node", node.Spec.Meta.ID, "reason", "includeWhen false")
@@ -111,6 +125,7 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 				res.Ready = false
 				res.Requeue = true
 				res.ended(OutcomePending, node.Spec.Meta.ID, err)
+				res.waitingOn(node.Spec.Meta.Dependencies, notReady, err)
 
 				//nolint:nilerr // unresolved dependency is normal convergence: signal NotReady+Requeue, not a hard error.
 				return res, nil
@@ -151,10 +166,11 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 			if err != nil {
 				return res, res.failed(node.Spec.Meta.ID, fmt.Errorf("node %s: external get: %w", node.Spec.Meta.ID, err))
 			}
-			node.SetObserved([]*unstructured.Unstructured{obj})
+			observed := []*unstructured.Unstructured{obj}
+			node.SetObserved(observed)
 			readyErr := node.CheckReadiness()
-			res.notReady(node.Spec.Meta.ID, readyErr)
-			logNode(l, "node read", node.Spec.Meta.ID, target, d.GroupVersionKind(), []*unstructured.Unstructured{obj}, false, readyErr)
+			rr := res.notReady(notReady, node.Spec.Meta.ID, readyErr, observed)
+			logNode(l, "node read", node.Spec.Meta.ID, target, d.GroupVersionKind(), observed, false, readyErr, rr)
 
 			continue
 		case graph.NodeTypeExternalCollection:
@@ -184,8 +200,8 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 			}
 			node.SetObserved(items)
 			readyErr := node.CheckReadiness()
-			res.notReady(node.Spec.Meta.ID, readyErr)
-			logNode(l, "node read", node.Spec.Meta.ID, target, d.GroupVersionKind(), items, true, readyErr)
+			rr := res.notReady(notReady, node.Spec.Meta.ID, readyErr, items)
+			logNode(l, "node read", node.Spec.Meta.ID, target, d.GroupVersionKind(), items, true, readyErr, rr)
 
 			continue
 		}
@@ -212,8 +228,8 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 
 		// A not-ready child is not an error: it exists but isn't ready yet.
 		readyErr := node.CheckReadiness()
-		res.notReady(node.Spec.Meta.ID, readyErr)
-		logNode(l, "node applied", node.Spec.Meta.ID, target, node.Spec.Template.GroupVersionKind(), observed, collection, readyErr)
+		rr := res.notReady(notReady, node.Spec.Meta.ID, readyErr, observed)
+		logNode(l, "node applied", node.Spec.Meta.ID, target, node.Spec.Template.GroupVersionKind(), observed, collection, readyErr, rr)
 	}
 
 	// Every non-ignored node was resolved and applied without a pending-dependency
@@ -229,21 +245,59 @@ func (e *Engine) Reconcile(ctx context.Context, rt *runtime.Runtime, appliers ma
 }
 
 // notReady records a node whose readiness check failed: the pass is not ready
-// and requeues, and the first such node is kept as the NotReady node/reason.
-func (r *Result) notReady(nodeID string, readyErr error) {
+// and requeues, the first such node is kept as the NotReady node/reason, and the
+// node's Ready reason goes into seen for nodes that depend on it. It returns that
+// Ready reason ("" when the node is ready).
+func (r *Result) notReady(seen map[string]string, nodeID string, readyErr error, observed []*unstructured.Unstructured) string {
 	if readyErr == nil {
-		return
+		return ""
 	}
+	rr := readyReason(observed)
+	seen[nodeID] = rr
 	r.Ready, r.Requeue = false, true
 	if r.Node == "" {
-		r.Node, r.Reason = nodeID, readyErr.Error()
+		r.Node, r.Reason, r.ReadyReason = nodeID, readyErr.Error(), rr
 	}
+
+	return rr
 }
 
 // ended records why the pass stopped at nodeID, replacing any not-ready node
 // recorded earlier in the pass.
 func (r *Result) ended(outcome Outcome, nodeID string, err error) {
 	r.Outcome, r.Node, r.Reason = outcome, nodeID, err.Error()
+	r.Dependency, r.ReadyReason = "", ""
+}
+
+// waitingOn records which not-ready dependency a data-pending err waits for, and
+// that dependency's Ready reason. kro names one not-ready dependency in its
+// message; when the message format is not recognised, the first not-ready
+// dependency in the node's dependency order is used. Nothing is recorded when err
+// is not data pending, or when no dependency is not ready (the pass waits on a
+// field, not on readiness).
+func (r *Result) waitingOn(deps []string, notReady map[string]string, err error) {
+	if !errors.Is(err, runtime.ErrDataPending) {
+		return
+	}
+	var first string
+	for _, dep := range deps {
+		if _, ok := notReady[dep]; !ok {
+			continue
+		}
+		msg := err.Error()
+		if strings.Contains(msg, fmt.Sprintf("dependent node %q not ready", dep)) ||
+			strings.Contains(msg, fmt.Sprintf("includeWhen dependency %q not ready", dep)) {
+			r.Dependency, r.ReadyReason = dep, notReady[dep]
+
+			return
+		}
+		if first == "" {
+			first = dep
+		}
+	}
+	if first != "" {
+		r.Dependency, r.ReadyReason = first, notReady[first]
+	}
 }
 
 // failed records an error return at nodeID and returns err unchanged. An error

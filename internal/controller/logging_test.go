@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -125,5 +126,23 @@ func TestReconcile_PassEndLine_OnError(t *testing.T) {
 	v := lines[0].Values
 	if v["outcome"] != "Failed" || v["node"] != "config" || v["reason"] == "" {
 		t.Fatalf("pass ended line on error wrong: %+v", v)
+	}
+}
+
+// The pass ended line names the dependency a pass waits for and the Ready reason
+// only when the engine found them, so a complete pass gains no empty fields.
+func TestPassEndFields(t *testing.T) {
+	pending := passEndFields(kropengine.Result{Outcome: kropengine.OutcomePending, Node: "serviceAccount",
+		Reason: "not ready", Dependency: "bucket", ReadyReason: "UpdateFailed"})
+	want := []any{"outcome", kropengine.OutcomePending, "node", "serviceAccount", "reason", "not ready", "ready", false,
+		"dependency", "bucket", "readyReason", "UpdateFailed"}
+	if !reflect.DeepEqual(pending, want) {
+		t.Fatalf("pending fields = %v, want %v", pending, want)
+	}
+
+	complete := passEndFields(kropengine.Result{Outcome: kropengine.OutcomeComplete, Ready: true})
+	want = []any{"outcome", kropengine.OutcomeComplete, "node", "", "reason", "", "ready", true}
+	if !reflect.DeepEqual(complete, want) {
+		t.Fatalf("complete fields = %v, want %v", complete, want)
 	}
 }

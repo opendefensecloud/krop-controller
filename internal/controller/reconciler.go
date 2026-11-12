@@ -195,7 +195,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 
 	res, err := kropengine.New().Reconcile(ctx, rt, appliers, readers, r.Routing)
 	// Why this pass ended, also on an error return (ADR 0013: V(1)).
-	l.V(1).Info("pass ended", "outcome", res.Outcome, "node", res.Node, "reason", res.Reason, "ready", res.Ready)
+	l.V(1).Info("pass ended", passEndFields(res)...)
 	if err != nil {
 		return res, err
 	}
@@ -325,6 +325,21 @@ func writeConditions(inst *unstructured.Unstructured, conditions []metav1.Condit
 	}
 
 	return unstructured.SetNestedSlice(inst.Object, raw, "status", "conditions")
+}
+
+// passEndFields returns the fields of the V(1) "pass ended" line. dependency and
+// readyReason are added only when set: they say which not-ready dependency a
+// Pending pass waits for and that object's Ready reason code (#72).
+func passEndFields(res kropengine.Result) []any {
+	kv := []any{"outcome", res.Outcome, "node", res.Node, "reason", res.Reason, "ready", res.Ready}
+	if res.Dependency != "" {
+		kv = append(kv, "dependency", res.Dependency)
+	}
+	if res.ReadyReason != "" {
+		kv = append(kv, "readyReason", res.ReadyReason)
+	}
+
+	return kv
 }
 
 // deleteChildren deletes all children of the instance (by the instance-uid

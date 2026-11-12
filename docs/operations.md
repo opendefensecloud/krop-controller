@@ -134,6 +134,7 @@ leader election runs multiple active managers and is unsupported.
   | `kind`, `cluster`, `namespace`, `name`, `instanceUID` | the instance: its kind, consumer logical cluster, namespace, name and UID |
   | `node`, `target`, `gvk`, `child`, `childNamespace`, `children` | the blueprint resource id, its target (`consumer` / `provider` / `host`), the child's `group/version/Kind` and its final (qualified) name; on deletion lines `children` lists each deleted child as `<group/version/Kind> <namespace>/<name>` |
   | `outcome`, `reason`, `ready` | how a pass or node ended, and kro's or the API server's message |
+| `dependency`, `readyReason` | for a `Pending` pass, the not-ready dependency it waits for; the reason code of the not-ready object's `Ready` condition (e.g. Config Connector's `UpdateFailed` or `DependencyNotReady`). The condition's message is never logged: `kubectl get` the child to read it |
 
   Below level `2`, controller-runtime samples the production log: after the first
   100 lines with the same message in a second, only every 100th is kept. Deletions
@@ -141,7 +142,8 @@ leader election runs multiple active managers and is unsupported.
   under that limit unless more than 100 instances are deleted within one second.
   Error lines carry no stack trace unless `--zap-stacktrace-level=error` is set.
 
-  Logs never contain object content, only names, kinds and messages. `kubectl logs`
+  Logs never contain object content, only names, kinds, messages and the reason code
+  of a not-ready `Ready` condition. `kubectl logs`
   shows the same JSON. In Loki, adjust the stream selector to your log shipper's
   labels. Shippers usually add `namespace` and `cluster` as **stream labels** (the
   krop pod's own namespace and cluster), and a plain `| json` then renames the
@@ -158,6 +160,11 @@ leader election runs multiple active managers and is unsupported.
   {app_kubernetes_io_name="krop-controller"}
     | json blueprint="blueprint", outcome="outcome", node="node", reason="reason"
     | blueprint="bucket" | outcome="Pending"
+
+  # Passes waiting on a dependency that is failing, not just still being created
+  {app_kubernetes_io_name="krop-controller"}
+    | json outcome="outcome", dependency="dependency", readyReason="readyReason"
+    | outcome="Pending" | readyReason="UpdateFailed"
   ```
 - **Status conditions** — the primary operational signal:
 

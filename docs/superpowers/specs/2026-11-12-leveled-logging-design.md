@@ -119,6 +119,8 @@ Per-pass and per-node lines add:
 | `gvk` | child GVK, `group/version/Kind` |
 | `child` | final child name after qualification (and `childNamespace` if namespaced) |
 | `reason` | kro's error/readiness message, as a string |
+| `dependency` | for a `Pending` pass, the not-ready dependency the node waits for |
+| `readyReason` | reason code of the not-ready object's `Ready` condition (the dependency's on a `Pending` line); the condition's message is never logged (ADR 0013 amendment) |
 
 Components that are not instance-scoped use `export` (supervisor), `blueprint`
 (registrar), and `record` / `instanceUID` / `cluster` (sweeper). The liveness record

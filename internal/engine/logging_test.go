@@ -17,6 +17,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -285,5 +286,142 @@ func TestGVKString(t *testing.T) {
 	gvk := schema.GroupVersionKind{Group: "storage.cnrm.cloud.google.com", Version: "v1beta1", Kind: "StorageBucket"}
 	if got := GVKString(gvk); got != "storage.cnrm.cloud.google.com/v1beta1/StorageBucket" {
 		t.Fatalf("GVK = %q", got)
+	}
+}
+
+// withReady returns an applier mutation that sets a Ready condition (and, when
+// given, a message that must never reach the logs).
+func withReady(status, reason, message string) func(*unstructured.Unstructured) {
+	return func(o *unstructured.Unstructured) {
+		_ = unstructured.SetNestedSlice(o.Object, []any{
+			map[string]any{"type": "Synced", "status": "False", "reason": "ReconcileError"},
+			map[string]any{"type": "Ready", "status": status, "reason": reason, "message": message},
+		}, "status", "conditions")
+	}
+}
+
+func TestReadyReason(t *testing.T) {
+	obj := func(mutate func(*unstructured.Unstructured)) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{Object: map[string]any{}}
+		if mutate != nil {
+			mutate(u)
+		}
+
+		return u
+	}
+	for _, tc := range []struct {
+		desc string
+		objs []*unstructured.Unstructured
+		want string
+	}{
+		{"not ready", []*unstructured.Unstructured{obj(withReady("False", "UpdateFailed", "x"))}, "UpdateFailed"},
+		{"unknown", []*unstructured.Unstructured{obj(withReady("Unknown", "Creating", ""))}, "Creating"},
+		{"ready", []*unstructured.Unstructured{obj(withReady("True", "UpToDate", ""))}, ""},
+		{"no conditions", []*unstructured.Unstructured{obj(nil)}, ""},
+		{"only another condition type", []*unstructured.Unstructured{obj(func(o *unstructured.Unstructured) {
+			_ = unstructured.SetNestedSlice(o.Object, []any{map[string]any{"type": "Synced", "status": "False", "reason": "ReconcileError"}}, "status", "conditions")
+		})}, ""},
+		{"free text is dropped", []*unstructured.Unstructured{obj(withReady("False", "bucket name already taken", ""))}, ""},
+		{"code with punctuation is dropped", []*unstructured.Unstructured{obj(withReady("False", "token=abc", ""))}, ""},
+		{"overlong code is dropped", []*unstructured.Unstructured{obj(withReady("False", strings.Repeat("A", 65), ""))}, ""},
+		{"first not-ready item of a collection",
+			[]*unstructured.Unstructured{obj(withReady("True", "UpToDate", "")), obj(withReady("False", "DependencyNotReady", ""))}, "DependencyNotReady"},
+	} {
+		if got := readyReason(tc.objs); got != tc.want {
+			t.Errorf("%s: readyReason = %q, want %q", tc.desc, got, tc.want)
+		}
+	}
+}
+
+// #72: a pass pending on a not-ready dependency names the dependency and its
+// Ready condition's reason, never the condition's free-text message.
+func TestReconcile_Pending_NamesDependencyReadyReason(t *testing.T) {
+	ctx, sink := logCtx(2)
+	provider := &fakeApplier{mutate: withReady("False", "UpdateFailed", "SENTINEL-MESSAGE")}
+	res, err := New().Reconcile(ctx, crossTargetRuntime(t),
+		map[Target]Applier{TargetConsumer: &fakeApplier{}, TargetProvider: provider}, nil, crossTargetRouting())
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if res.Outcome != OutcomePending || res.Node != "subnet" || res.Dependency != "vpc" || res.ReadyReason != "UpdateFailed" {
+		t.Fatalf("want Pending on subnet waiting for vpc (UpdateFailed), got %+v", res)
+	}
+	vpc := sink.Find("node applied")
+	if len(vpc) != 1 || vpc[0].Values["node"] != "vpc" || vpc[0].Values["readyReason"] != "UpdateFailed" {
+		t.Fatalf("want the vpc node line to carry readyReason, got: %s", sink.Raw())
+	}
+	if strings.Contains(sink.Raw(), "SENTINEL-MESSAGE") {
+		t.Fatalf("condition message leaked into logs: %s", sink.Raw())
+	}
+}
+
+// A dependency without a Ready condition is still named; the reason stays empty.
+func TestReconcile_Pending_DependencyWithoutCondition(t *testing.T) {
+	res, err := New().Reconcile(context.Background(), crossTargetRuntime(t),
+		map[Target]Applier{TargetConsumer: &fakeApplier{}, TargetProvider: &fakeApplier{}}, nil, crossTargetRouting())
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if res.Dependency != "vpc" || res.ReadyReason != "" {
+		t.Fatalf("want dependency vpc without a reason, got %+v", res)
+	}
+}
+
+func TestReconcile_NotReady_ReadyReasonOfNode(t *testing.T) {
+	rt := runtimeFor(t, vpcOnlyRGD(), "VPCOnly", map[string]any{"region": "eu"})
+	res, err := New().Reconcile(context.Background(), rt,
+		map[Target]Applier{TargetProvider: &fakeApplier{mutate: withReady("False", "Creating", "")}}, nil,
+		map[string]Target{"vpc": TargetProvider})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if res.Outcome != OutcomeNotReady || res.Node != "vpc" || res.Dependency != "" || res.ReadyReason != "Creating" {
+		t.Fatalf("want NotReady on vpc with readyReason Creating, got %+v", res)
+	}
+}
+
+func TestReconcile_IncludeWhenPending_NamesDependency(t *testing.T) {
+	rt := runtimeFor(t, includeWhenRGD(), "IncWhen", map[string]any{"region": "eu"})
+	res, _ := New().Reconcile(context.Background(), rt,
+		map[Target]Applier{TargetConsumer: &fakeApplier{}, TargetProvider: &fakeApplier{mutate: withReady("False", "UpdateFailed", "")}},
+		nil, crossTargetRouting())
+	if res.Outcome != OutcomePending || res.Dependency != "vpc" || res.ReadyReason != "UpdateFailed" {
+		t.Fatalf("want Pending waiting for vpc (UpdateFailed), got %+v", res)
+	}
+}
+
+// With two not-ready dependencies kro names one of them (in map order); the
+// recorded dependency must be the one its reason names.
+func TestReconcile_Pending_DependencyMatchesReason(t *testing.T) {
+	rgd := generator.NewResourceGraphDefinition("twodeps",
+		generator.WithSchema("TwoDeps", "v1alpha1", map[string]any{"region": "string"}, nil),
+		generator.WithResource("vpc", map[string]any{
+			"apiVersion": "ec2.services.k8s.aws/v1alpha1", "kind": "VPC",
+			"metadata": map[string]any{"name": "${schema.spec.region}-vpc"},
+			"spec":     map[string]any{"cidrBlocks": []any{"10.0.0.0/16"}},
+		}, []string{"${vpc.status.vpcID != ''}"}, nil),
+		generator.WithResource("gateway", map[string]any{
+			"apiVersion": "ec2.services.k8s.aws/v1alpha1", "kind": "VPC",
+			"metadata": map[string]any{"name": "${schema.spec.region}-gw"},
+			"spec":     map[string]any{"cidrBlocks": []any{"10.1.0.0/16"}},
+		}, []string{"${gateway.status.vpcID != 'none'}"}, nil),
+		generator.WithResource("subnet", map[string]any{
+			"apiVersion": "ec2.services.k8s.aws/v1alpha1", "kind": "Subnet",
+			"metadata": map[string]any{"name": "${vpc.metadata.name}-${gateway.metadata.name}"},
+			"spec":     map[string]any{"vpcID": "fixed", "cidrBlock": "10.0.1.0/24"},
+		}, nil, nil),
+	)
+	rgd.Spec.Schema.Group = "krop.opendefense.cloud"
+
+	for range 20 {
+		rt := runtimeFor(t, rgd, "TwoDeps", map[string]any{"region": "eu"})
+		res, err := New().Reconcile(context.Background(), rt, map[Target]Applier{TargetConsumer: &fakeApplier{}}, nil, nil)
+		if err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+		if res.Node != "subnet" || res.Dependency == "" ||
+			!strings.Contains(res.Reason, fmt.Sprintf("dependent node %q", res.Dependency)) {
+			t.Fatalf("dependency %q does not match reason %q", res.Dependency, res.Reason)
+		}
 	}
 }
