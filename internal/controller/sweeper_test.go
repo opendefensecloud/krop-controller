@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -143,13 +144,14 @@ func TestSweeper_DeletesOrphanedChildrenAndRecord(t *testing.T) {
 		v["instanceUID"] != "uid-1" || v["cluster"] != "c1" || v["export"] != "agents.example.com" {
 		t.Fatalf("orphaned instance line wrong: level=%d %+v", orphaned[0].Level, v)
 	}
-	swept := sink.Find("swept orphaned child")
+	swept := sink.Find("swept orphaned children")
 	if len(swept) != 1 {
-		t.Fatalf("want 1 swept child line, got %d: %s", len(swept), sink.Raw())
+		t.Fatalf("want 1 swept children line, got %d: %s", len(swept), sink.Raw())
 	}
-	if v := swept[0].Values; swept[0].Level != 0 || v["gvk"] != agentRequestGVKToken || v["child"] != "child-1" ||
+	if v := swept[0].Values; swept[0].Level != 0 || v["target"] != "provider" ||
+		!slices.Equal(childrenOf(swept[0]), []string{agentRequestGVKToken + " default/child-1"}) ||
 		v["instanceUID"] != "uid-1" || v["cluster"] != "c1" {
-		t.Fatalf("swept child line wrong: level=%d %+v", swept[0].Level, v)
+		t.Fatalf("swept children line wrong: level=%d %+v", swept[0].Level, v)
 	}
 	fresh := sink.Find("liveness record fresh")
 	if len(fresh) != 1 || fresh[0].Level != 2 || fresh[0].Values["record"] != "krop-live-fresh" {
@@ -195,7 +197,8 @@ func TestSweeper_SweepsHostChildren(t *testing.T) {
 		Clock:          func() time.Time { return now },
 		startedAt:      now.Add(-1 * time.Hour),
 	}
-	if err := s.Sweep(context.Background()); err != nil {
+	lg, sink := testlog.New(0)
+	if err := s.Sweep(log.IntoContext(context.Background(), lg)); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
 
@@ -207,6 +210,15 @@ func TestSweeper_SweepsHostChildren(t *testing.T) {
 	}
 	if exists(t, hostCl, hostDeploymentGVK, "host-child-1") {
 		t.Error("stale host child was not swept through the host client")
+	}
+	// One line per target, each listing that target's children.
+	targets := map[any][]string{}
+	for _, l := range sink.Find("swept orphaned children") {
+		targets[l.Values["target"]] = childrenOf(l)
+	}
+	if len(targets) != 2 || len(targets["provider"]) != 1 ||
+		!slices.Equal(targets["host"], []string{"apps/v1/Deployment default/host-child-1"}) {
+		t.Fatalf("want one provider and one host swept line, got: %s", sink.Raw())
 	}
 }
 

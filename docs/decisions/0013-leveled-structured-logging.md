@@ -24,8 +24,12 @@ All components log through controller-runtime's zap/logr with three tiers and on
 of field names. Full detail: [leveled-logging design](../superpowers/specs/2026-11-12-leveled-logging-design.md).
 
 - **Default (Info + Error): quiet.** Errors, rare lifecycle events (blueprint
-  published/republished, instance manager started/stopped/crashed), and **every deletion
-  krop decides on its own** (prune, instance-deletion GC, orphan sweep). No per-pass lines.
+  published/republished/deleted, instance manager started/stopped/crashed), and **every
+  deletion krop decides on its own** (prune, instance-deletion GC, orphan sweep, APIExport
+  withdrawal). Child deletions are one line per pass and target listing the children, so
+  controller-runtime's log sampling (100 lines per message per second, then 1 in 100)
+  cannot drop them in bursts. Error lines carry no stack trace by default
+  (`--zap-stacktrace-level=panic`). No per-pass lines.
 - **V(1) (`--zap-log-level=debug`): why each pass ended.** One line per instance pass with
   the outcome (`Complete`, `NotReady`, `Pending`, `ExternalNotFound`, `Failed`), the node
   that ended it, and kro's reason.

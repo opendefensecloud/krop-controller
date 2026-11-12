@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // fieldManager identifies the Registrar as the server-side-apply field owner.
@@ -87,7 +88,8 @@ func identityByGroupResource(ctx context.Context, c client.Client) (map[schema.G
 // blueprint withdrawal: the blueprint is the offering, so removing it removes the
 // API. The APIExport is fetched first to discover its referenced schema names; a
 // missing APIExport (already gone) is treated as success. Each delete ignores
-// NotFound so a partially-torn-down state converges.
+// NotFound so a partially-torn-down state converges. Withdrawing the API is a
+// deletion krop decides on, so it is logged at the default level (ADR 0013).
 func DeletePublishedAPI(ctx context.Context, c client.Client, exportName string) error {
 	export := &apisv1alpha2.APIExport{}
 	if err := c.Get(ctx, types.NamespacedName{Name: exportName}, export); err != nil {
@@ -99,16 +101,23 @@ func DeletePublishedAPI(ctx context.Context, c client.Client, exportName string)
 	}
 	// Delete the referenced ARS(es) before the APIExport so a mid-teardown resync
 	// cannot observe an APIExport referencing an already-deleted schema.
+	schemas := make([]string, 0, len(export.Spec.Resources))
 	for _, res := range export.Spec.Resources {
 		ars := &apisv1alpha1.APIResourceSchema{}
 		ars.SetName(res.Schema)
 		if err := client.IgnoreNotFound(c.Delete(ctx, ars)); err != nil {
 			return fmt.Errorf("deleting APIResourceSchema %q: %w", res.Schema, err)
 		}
+		schemas = append(schemas, res.Schema)
 	}
-	if err := client.IgnoreNotFound(c.Delete(ctx, export)); err != nil {
+	if err := c.Delete(ctx, export); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
 		return fmt.Errorf("deleting APIExport %q: %w", exportName, err)
 	}
+	logf.FromContext(ctx).Info("deleted APIExport", "export", exportName, "schemas", schemas)
 
 	return nil
 }

@@ -16,6 +16,7 @@ package registrar
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -29,9 +30,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kropv1alpha1 "go.opendefense.cloud/krop-controller/api/v1alpha1"
+	"go.opendefense.cloud/krop-controller/internal/testlog"
 )
 
 // TestReconcile_FinalizerTeardownOnDelete proves the deletion path: a blueprint
@@ -90,7 +93,8 @@ func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 		OnDeleted: func(export string) { stopped = append(stopped, export) },
 	}
 
-	res, err := r.Reconcile(context.Background(), reconcile.Request{
+	lg, sink := testlog.New(0)
+	res, err := r.Reconcile(log.IntoContext(context.Background(), lg), reconcile.Request{
 		Name: "widgets",
 	})
 	if err != nil {
@@ -98,6 +102,13 @@ func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 	}
 	if res != (reconcile.Result{}) {
 		t.Fatalf("delete path should not requeue, got %+v", res)
+	}
+
+	// Withdrawing the API is a deletion krop decides on: logged at the default level.
+	deleted := sink.Find("deleted APIExport")
+	if len(deleted) != 1 || deleted[0].Level != 0 || deleted[0].Values["export"] != exportName ||
+		!reflect.DeepEqual(deleted[0].Values["schemas"], []any{arsName}) {
+		t.Fatalf("want one default-level deleted APIExport line for %s, got: %s", exportName, sink.Raw())
 	}
 
 	if len(stopped) != 1 || stopped[0] != exportName {
@@ -125,6 +136,25 @@ func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 	}
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("unexpected Get error: %v", err)
+	}
+}
+
+// TestDeletePublishedAPI_AlreadyGoneNotLogged proves an APIExport that is already
+// gone (e.g. on the retry after a failed finalizer removal) is not logged as a
+// deletion: krop did not delete anything.
+func TestDeletePublishedAPI_AlreadyGoneNotLogged(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := apisv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatalf("registering scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	lg, sink := testlog.New(0)
+	if err := DeletePublishedAPI(log.IntoContext(context.Background(), lg), c, "widgets.example.com"); err != nil {
+		t.Fatalf("DeletePublishedAPI: %v", err)
+	}
+	if n := len(sink.Find("deleted APIExport")); n != 0 {
+		t.Fatalf("want no deleted APIExport line for an absent export, got: %s", sink.Raw())
 	}
 }
 

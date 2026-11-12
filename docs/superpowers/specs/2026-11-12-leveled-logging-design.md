@@ -66,7 +66,7 @@ level `2` shows `V(2)`. Document this mapping, since `V(2)` has no named zap lev
 
 | Tier | Purpose | Instance reconcile / engine | Registrar | Supervisor | Sweeper |
 |---|---|---|---|---|---|
-| **default (Info + Error)** | errors, rare lifecycle, deletions krop decides on | reconcile errors (with instance fields); **each prune delete** (GVK, target, child name) | publish failure (the reason it already writes to status + error); APIExport published/republished when the spec hash changed | manager started / stopped per export; manager crashed (exists) | **each orphan child deleted** (exists); sweep pass failed (exists); orphaned instance detected (exists) |
+| **default (Info + Error)** | errors, rare lifecycle, deletions krop decides on | reconcile errors (with instance fields); **prune deletes**, one line per pass and target listing the deleted children | publish failure (the reason it already writes to status + error); APIExport published/republished when the spec hash changed; APIExport deleted with its blueprint | manager started / stopped per export; manager crashed (exists) | **orphan children deleted**, one line per target; sweep pass failed (exists); orphaned instance detected (exists) |
 | **V(1)** | why each pass ended | one line per pass: outcome, ending node, kro's reason | unchanged resync ("already published") | — | starting sweeper; startup-grace skip (exists) |
 | **V(2)** | what each pass did | one line per node: skipped (includeWhen) / applied / read / not ready, target, final child name | — | `Ensure` no-op (already running) | per-record "still fresh" decisions |
 
@@ -75,6 +75,13 @@ pass-end line replaces them.
 
 Instance deletion (finalizer path) child deletes are deletions krop makes on its own and
 are logged at default, same as prune.
+
+Deletions are logged as one line per pass and target, not per child: below V(2),
+controller-runtime's production logger samples each message (100 per second, then 1 in
+100), so per-child lines would be dropped when many instances are deleted at once. The
+binary defaults `--zap-stacktrace-level` to `panic`: controller-runtime's production
+default puts a Go stack trace on every error line, and krop's errors are reconcile
+errors whose message already says what failed.
 
 ## Fields
 

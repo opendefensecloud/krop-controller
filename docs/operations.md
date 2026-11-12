@@ -59,6 +59,7 @@ The binary (`cmd/controller/main.go`) accepts:
 | `--leader-elect` | `false` | single active manager; creates a `coordination.k8s.io` Lease in the provider workspace |
 | `--leader-election-namespace` | `$POD_NAMESPACE` → `default` | namespace of the leader-election Lease (in the provider workspace) |
 | `--zap-log-level`, `--zap-devel`, `--zap-encoder`, … | production JSON | zap logging (controller-runtime) |
+| `--zap-stacktrace-level` | `panic` | level from which lines carry a Go stack trace; `error` restores controller-runtime's default |
 
 The kubeconfig is **not** a flag: the binary calls `ctrl.GetConfigOrDie()`, which
 honors `KUBECONFIG` (set by the chart to `/etc/kcp/<key>` when a kubeconfig Secret
@@ -120,7 +121,7 @@ leader election runs multiple active managers and is unsupported.
 
   | `--zap-log-level` | Shows | Typical lines |
   | --- | --- | --- |
-  | `info` (default) | errors, rare lifecycle, deletions krop decides on | reconcile errors; `published APIExport`; `starting` / `stopping instance manager`; `pruned child`, `deleted child`, `swept orphaned child` |
+  | `info` (default) | errors, rare lifecycle, deletions krop decides on | reconcile errors; `published APIExport`, `deleted APIExport`; `starting` / `stopping instance manager`; `pruned children`, `deleted children`, `swept orphaned children` (one line per instance pass and target) |
   | `debug` (= V(1)) | why each instance pass ended | `pass ended` with `outcome` (`Complete`, `NotReady`, `Pending`, `ExternalNotFound`, `Failed`), `node`, `reason`; `APIExport unchanged` |
   | `2` (= V(2)) | what each pass did | `node applied` / `node read` / `node skipped` per node; `liveness record fresh` |
 
@@ -131,8 +132,14 @@ leader election runs multiple active managers and is unsupported.
   | `blueprint` | blueprint (RGD) name, e.g. `bucket` |
   | `export` | APIExport name, e.g. `buckets.storage.api.opendefense.cloud` |
   | `kind`, `cluster`, `namespace`, `name`, `instanceUID` | the instance: its kind, consumer logical cluster, namespace, name and UID |
-  | `node`, `target`, `gvk`, `child`, `childNamespace`, `children` | the blueprint resource id, its target (`consumer` / `provider` / `host`), the child's `group/version/Kind` and its final (qualified) name |
+  | `node`, `target`, `gvk`, `child`, `childNamespace`, `children` | the blueprint resource id, its target (`consumer` / `provider` / `host`), the child's `group/version/Kind` and its final (qualified) name; on deletion lines `children` lists each deleted child as `<group/version/Kind> <namespace>/<name>` |
   | `outcome`, `reason`, `ready` | how a pass or node ended, and kro's or the API server's message |
+
+  Below level `2`, controller-runtime samples the production log: after the first
+  100 lines with the same message in a second, only every 100th is kept. Deletions
+  are therefore logged as one line per instance pass and target, which keeps them
+  under that limit unless more than 100 instances are deleted within one second.
+  Error lines carry no stack trace unless `--zap-stacktrace-level=error` is set.
 
   Logs never contain object content, only names, kinds and messages. `kubectl logs`
   shows the same JSON. In Loki, adjust the stream selector to your log shipper's

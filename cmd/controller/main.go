@@ -41,6 +41,7 @@ import (
 	corev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
 	tenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -137,6 +138,16 @@ func (p *published) Delete(export string) {
 // -ldflags "-X main.version=...". It defaults to "dev" for local builds.
 var version = "dev"
 
+// newZapOptions returns the logging defaults the zap flags start from. Encoding
+// stays controller-runtime's production JSON, the right default for a deployed
+// controller (--zap-devel opts into dev mode). Stack traces are recorded only for
+// panics: controller-runtime would add one to every error line, but krop's errors
+// are reconcile errors whose message already says what failed, and a trace turns
+// each into a long multi-line field. --zap-stacktrace-level=error restores them.
+func newZapOptions() zap.Options {
+	return zap.Options{StacktraceLevel: zapcore.PanicLevel}
+}
+
 func main() {
 	if err := run(); err != nil {
 		ctrl.Log.WithName("entrypoint").Error(err, "fatal")
@@ -174,10 +185,8 @@ func run() error {
 			"Path to a kubeconfig for the host cluster to provision host-target children into. Defaults to in-cluster config; empty + no in-cluster config disables the host target.")
 	)
 
-	// zap logging flags (--zap-log-level, --zap-devel, --zap-encoder, ...). The
-	// zap.Options zero value defaults to production JSON encoding, which is the
-	// right default for a deployed controller; --zap-devel opts into dev mode.
-	var zapOpts zap.Options
+	// zap logging flags (--zap-log-level, --zap-devel, --zap-encoder, ...).
+	zapOpts := newZapOptions()
 	zapOpts.BindFlags(flag.CommandLine)
 
 	flag.Parse()

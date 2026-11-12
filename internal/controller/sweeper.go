@@ -218,7 +218,7 @@ func (s *Sweeper) sweepChildren(ctx context.Context, rec *unstructured.Unstructu
 	}
 
 	providerRaw, _, _ := unstructured.NestedString(rec.Object, "data", "providerChildGVKs")
-	if err := s.sweepChildrenVia(ctx, s.ProviderClient, providerRaw, instanceUID); err != nil {
+	if err := s.sweepChildrenVia(ctx, s.ProviderClient, kropengine.TargetProvider, providerRaw, instanceUID); err != nil {
 		return err
 	}
 
@@ -226,7 +226,7 @@ func (s *Sweeper) sweepChildren(ctx context.Context, rec *unstructured.Unstructu
 	// is configured (nil ⇒ host target disabled, nothing to reclaim there).
 	if s.HostClient != nil {
 		hostRaw, _, _ := unstructured.NestedString(rec.Object, "data", "hostChildGVKs")
-		if err := s.sweepChildrenVia(ctx, s.HostClient, hostRaw, instanceUID); err != nil {
+		if err := s.sweepChildrenVia(ctx, s.HostClient, kropengine.TargetHost, hostRaw, instanceUID); err != nil {
 			return err
 		}
 	}
@@ -234,11 +234,15 @@ func (s *Sweeper) sweepChildren(ctx context.Context, rec *unstructured.Unstructu
 	return nil
 }
 
-// sweepChildrenVia deletes the orphaned instance's children through one client:
-// for each GVK token in gvkRaw, list children by the instance-uid label and delete
-// them (ignoring not-found). Unparseable tokens are logged and skipped. ctx
-// carries Sweep's per-record logger (already named and tagged).
-func (s *Sweeper) sweepChildrenVia(ctx context.Context, cl client.Client, gvkRaw, instanceUID string) error {
+// sweepChildrenVia deletes the orphaned instance's children in one target through
+// its client: for each GVK token in gvkRaw, list children by the instance-uid label
+// and delete them (ignoring not-found), then log them as one line. Unparseable
+// tokens are logged and skipped. ctx carries Sweep's per-record logger (already
+// named and tagged).
+func (s *Sweeper) sweepChildrenVia(ctx context.Context, cl client.Client, target kropengine.Target, gvkRaw, instanceUID string) error {
+	var swept deletedChildren
+	defer func() { swept.log(ctx, "swept orphaned children", target) }()
+
 	l := log.FromContext(ctx)
 	sel := client.MatchingLabels{kropengine.LabelInstanceUID: instanceUID}
 	for token := range strings.SplitSeq(gvkRaw, ",") {
@@ -259,10 +263,11 @@ func (s *Sweeper) sweepChildrenVia(ctx context.Context, cl client.Client, gvkRaw
 		}
 		for j := range list.Items {
 			child := &list.Items[j]
-			if err := cl.Delete(ctx, child); client.IgnoreNotFound(err) != nil {
+			err := cl.Delete(ctx, child)
+			if client.IgnoreNotFound(err) != nil {
 				return fmt.Errorf("deleting %s %s: %w", gvk.Kind, child.GetName(), err)
 			}
-			l.Info("swept orphaned child", "gvk", token, "child", child.GetName(), "childNamespace", child.GetNamespace())
+			swept.add(token, child, err)
 		}
 	}
 
