@@ -348,10 +348,11 @@ func (r *Reconciler) deleteChildren(ctx context.Context, consumerClient client.C
 			}
 			for i := range list.Items {
 				item := &list.Items[i]
-				if err := cl.Delete(ctx, item); client.IgnoreNotFound(err) != nil {
+				err := cl.Delete(ctx, item)
+				if client.IgnoreNotFound(err) != nil {
 					return fmt.Errorf("deleting %s %s: %w", gvk.Kind, item.GetName(), err)
 				}
-				logChildDeleted(ctx, "deleted child", target, gvk, item)
+				logChildDeleted(ctx, "deleted child", target, gvk, item, err)
 			}
 		}
 	}
@@ -391,10 +392,11 @@ func (r *Reconciler) pruneChildren(ctx context.Context, consumerClient client.Cl
 				if keep[id] {
 					continue
 				}
-				if err := cl.Delete(ctx, item); client.IgnoreNotFound(err) != nil {
+				err := cl.Delete(ctx, item)
+				if client.IgnoreNotFound(err) != nil {
 					return fmt.Errorf("pruning %s %s: %w", gvk.Kind, item.GetName(), err)
 				}
-				logChildDeleted(ctx, "pruned child", target, gvk, item)
+				logChildDeleted(ctx, "pruned child", target, gvk, item, err)
 			}
 		}
 	}
@@ -404,7 +406,14 @@ func (r *Reconciler) pruneChildren(ctx context.Context, consumerClient client.Cl
 
 // logChildDeleted logs a child deletion krop decided on its own (prune or
 // instance-deletion GC) at the default level, so providers can see it (ADR 0013).
-func logChildDeleted(ctx context.Context, msg string, target kropengine.Target, gvk schema.GroupVersionKind, child *unstructured.Unstructured) {
+// Only a deletion krop actually started is logged: a child that was already
+// terminating (as listed, e.g. held by its own finalizer) is deleted again on every
+// pass, and a NotFound (deleteErr) means it was already gone.
+func logChildDeleted(ctx context.Context, msg string, target kropengine.Target, gvk schema.GroupVersionKind,
+	child *unstructured.Unstructured, deleteErr error) {
+	if deleteErr != nil || child.GetDeletionTimestamp() != nil {
+		return
+	}
 	log.FromContext(ctx).Info(msg, "target", string(target), "gvk", kropengine.GVKString(gvk),
 		"child", child.GetName(), "childNamespace", child.GetNamespace())
 }

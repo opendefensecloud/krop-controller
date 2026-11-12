@@ -213,7 +213,7 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 	published := &apisv1alpha2.APIExport{}
 	if err := r.Client.Get(ctx, client.ObjectKey{Name: exportName}, published); err != nil {
 		logf.FromContext(ctx).V(1).Info("re-Get of published APIExport for identityHash failed; resync will retry",
-			"apiexport", exportName, "err", err.Error())
+			"export", exportName, "err", err.Error())
 	} else {
 		identityHash = published.Status.IdentityHash
 	}
@@ -231,8 +231,9 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 		return reconcile.Result{}, fmt.Errorf("updating blueprint status: %w", err)
 	}
 	// A new or edited blueprint is a rare lifecycle event worth the default level;
-	// the unchanged 5m resync only shows at V(1) (ADR 0013).
-	l := logf.FromContext(ctx).WithValues("blueprint", bp.Name, "export", exportName, "specHash", specHash)
+	// the unchanged 5m resync only shows at V(1) (ADR 0013). blueprint comes from
+	// the controller's log constructor (cmd/controller/main.go).
+	l := logf.FromContext(ctx).WithValues("export", exportName, "specHash", specHash)
 	if changed {
 		l.Info("published APIExport")
 	} else {

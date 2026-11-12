@@ -139,8 +139,10 @@ var _ = Describe("M4a Registrar publication", Ordered, func() {
 		}
 		// The blueprint CRD is cluster-scoped (workspace-level); no namespace. The
 		// first publish's log lines are captured for the logging spec below.
+		// The logger carries blueprint like main.go's registrar log constructor.
 		var lg logr.Logger
 		lg, publishSink = testlog.New(1)
+		lg = lg.WithValues("blueprint", "kubernetescluster")
 		_, err = reg.Reconcile(log.IntoContext(ctx, lg), reconcile.Request{
 			Name: "kubernetescluster",
 		})
@@ -154,16 +156,20 @@ var _ = Describe("M4a Registrar publication", Ordered, func() {
 		Expect(published[0].Values).To(HaveKeyWithValue("blueprint", "kubernetescluster"))
 		Expect(published[0].Values).To(HaveKeyWithValue("export", expectedExportName))
 		Expect(published[0].Values).To(HaveKey("specHash"))
+		// The constructor already tags blueprint; the line must not repeat the key.
+		Expect(strings.Count(published[0].Raw, `"blueprint"`)).To(Equal(1), published[0].Raw)
 
 		// An unchanged resync logs at V(1) only.
 		lg, sink := testlog.New(1)
-		_, err := reg.Reconcile(log.IntoContext(ctx, lg), reconcile.Request{Name: "kubernetescluster"})
+		_, err := reg.Reconcile(log.IntoContext(ctx, lg.WithValues("blueprint", "kubernetescluster")),
+			reconcile.Request{Name: "kubernetescluster"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sink.Find("published APIExport")).To(BeEmpty())
 		unchanged := sink.Find("APIExport unchanged")
 		Expect(unchanged).To(HaveLen(1))
 		Expect(unchanged[0].Level).To(Equal(1))
 		Expect(unchanged[0].Values).To(HaveKeyWithValue("export", expectedExportName))
+		Expect(strings.Count(unchanged[0].Raw, `"blueprint"`)).To(Equal(1), unchanged[0].Raw)
 	})
 
 	It("publishes a correct APIExport + ARS + claims and writes blueprint status", func() {

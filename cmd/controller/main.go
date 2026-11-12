@@ -412,8 +412,8 @@ func run() error {
 			return fmt.Errorf("building krop-instance controller for %q: %w", exportName, err)
 		}
 
-		exportLog.Info("starting instance manager")
-
+		// The supervisor logs the manager start (ADR 0013); "using
+		// APIExportEndpointSlice" above marks the moment serving begins.
 		return imgr.Start(ctx)
 	}
 

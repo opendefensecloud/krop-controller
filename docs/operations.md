@@ -135,14 +135,22 @@ leader election runs multiple active managers and is unsupported.
   | `outcome`, `reason`, `ready` | how a pass or node ended, and kro's or the API server's message |
 
   Logs never contain object content, only names, kinds and messages. `kubectl logs`
-  shows the same JSON. In Loki (adjust the stream selector to your log shipper's labels):
+  shows the same JSON. In Loki, adjust the stream selector to your log shipper's
+  labels. Shippers usually add `namespace` and `cluster` as **stream labels** (the
+  krop pod's own namespace and cluster), and a plain `| json` then renames the
+  instance's fields to `namespace_extracted` / `cluster_extracted`. Extract the
+  fields you filter on explicitly under names of their own:
 
   ```logql
   # Everything about one ordered Bucket
-  {app_kubernetes_io_name="krop-controller"} | json | kind="Bucket" | namespace="team-a" | name="logs"
+  {app_kubernetes_io_name="krop-controller"}
+    | json inst_kind="kind", inst_ns="namespace", inst_name="name"
+    | inst_kind="Bucket" | inst_ns="team-a" | inst_name="logs"
 
   # Every pass of the bucket blueprint that is waiting on a dependency (needs debug or 2)
-  {app_kubernetes_io_name="krop-controller"} | json | blueprint="bucket" | outcome="Pending"
+  {app_kubernetes_io_name="krop-controller"}
+    | json blueprint="blueprint", outcome="outcome", node="node", reason="reason"
+    | blueprint="bucket" | outcome="Pending"
   ```
 - **Status conditions** — the primary operational signal:
 

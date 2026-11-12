@@ -20,11 +20,13 @@ import (
 	"testing"
 
 	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
@@ -156,6 +158,48 @@ func TestPruneChildren_DeletesStaleKeepsApplied(t *testing.T) {
 	got.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
 	if err := consumer.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "desired-child"}, got); err != nil {
 		t.Fatalf("desired-child was wrongly pruned: %v", err)
+	}
+}
+
+// A child that is already terminating (e.g. held by its own finalizer) stays in
+// the List and is deleted again on every complete pass; only the first deletion is
+// news, so repeats must not be logged at the default level.
+func TestPruneChildren_TerminatingChildNotLogged(t *testing.T) {
+	const uid = "uid-1"
+	terminating := mkLabeledCM("terminating-child", uid)
+	terminating.SetFinalizers([]string{"example.com/hold"})
+	now := metav1.Now()
+	terminating.SetDeletionTimestamp(&now)
+	consumer := fake.NewClientBuilder().WithObjects(terminating).Build()
+	r := &Reconciler{Graph: graphWithConfigMapNode(), ProviderClient: fake.NewClientBuilder().Build(), InstanceGVK: testGVK, BlueprintName: "bp"}
+
+	lg, sink := testlog.New(0)
+	if err := r.pruneChildren(log.IntoContext(context.Background(), lg), consumer, uid, nil); err != nil {
+		t.Fatalf("pruneChildren: %v", err)
+	}
+	if n := len(sink.Find("pruned child")); n != 0 {
+		t.Fatalf("want no pruned child line for an already-terminating child, got %d: %s", n, sink.Raw())
+	}
+}
+
+// A child that vanished between List and Delete was not deleted by krop, so it
+// must not be logged as a deletion.
+func TestPruneChildren_NotFoundNotLogged(t *testing.T) {
+	const uid = "uid-2"
+	consumer := fake.NewClientBuilder().WithObjects(mkLabeledCM("gone-child", uid)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteOption) error {
+				return apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, obj.GetName())
+			},
+		}).Build()
+	r := &Reconciler{Graph: graphWithConfigMapNode(), ProviderClient: fake.NewClientBuilder().Build(), InstanceGVK: testGVK, BlueprintName: "bp"}
+
+	lg, sink := testlog.New(0)
+	if err := r.pruneChildren(log.IntoContext(context.Background(), lg), consumer, uid, nil); err != nil {
+		t.Fatalf("pruneChildren: %v", err)
+	}
+	if n := len(sink.Find("pruned child")); n != 0 {
+		t.Fatalf("want no pruned child line when Delete returns NotFound, got %d: %s", n, sink.Raw())
 	}
 }
 

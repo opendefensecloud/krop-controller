@@ -34,8 +34,11 @@ type Line struct {
 	Level int
 	// Err is the error text of an error line, empty for info lines.
 	Err string
-	// Values holds every other key/value pair, as decoded from JSON.
+	// Values holds every other key/value pair, as decoded from JSON. A key
+	// written twice keeps only its last value here; Raw shows both.
 	Values map[string]any
+	// Raw is the line exactly as written.
+	Raw string
 }
 
 // Sink collects the lines a logger from New writes. Safe for concurrent use.
@@ -57,7 +60,7 @@ func New(verbosity int) (logr.Logger, *Sink) {
 func (s *Sink) write(obj string) {
 	values := map[string]any{}
 	_ = json.Unmarshal([]byte(obj), &values)
-	line := Line{Values: values}
+	line := Line{Values: values, Raw: obj}
 	if msg, ok := values["msg"].(string); ok {
 		line.Msg = msg
 	}
