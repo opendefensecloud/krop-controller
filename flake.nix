@@ -24,7 +24,7 @@
       {
         devShells.default = dev-kit.lib.mkShell {
           inherit system;
-          goVersion = "1.27.3";
+          goVersion = "1.27.4";
           # Private module host: skip the public proxy/sumdb for our GitLab modules.
           env.GOPRIVATE = "gitlab.opendefense.cloud";
           # dev-kit's hook ends on `[[ -f …pre-commit.legacy ]] && rm`, which exits 1
