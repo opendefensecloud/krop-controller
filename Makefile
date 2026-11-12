@@ -8,11 +8,14 @@ common.mk:
 APIGEN ?= $(LOCALGOBIN)/apigen
 
 KCP ?= $(LOCALBIN)/kcp
-# Envtest kcp binary version. Pinned to what multicluster-provider v0.8.0's
-# envtest was built/tested against (its Makefile + access-operator both use
-# 0.30.0). This is the test-harness binary, distinct from the production kcp
-# version (idea.md spikes targeted v0.32.3).
-KCP_VERSION ?= 0.30.0
+# kcp version the envtest binary runs. Only the 0.33 line receives security
+# fixes, and releases before 0.33.6 have known vulnerabilities.
+KCP_VERSION ?= 0.33.6
+# kcp server version the e2e suite pins on the kcp-operator RootShard and
+# FrontProxy. Defaults to KCP_VERSION so e2e tests the same version rather than
+# whatever kcp-operator happens to default to. Set empty to use that default.
+E2E_KCP_VERSION ?= $(KCP_VERSION)
+export E2E_KCP_VERSION
 
 DOCKER ?= docker
 IMG_REGISTRY ?= ghcr.io/opendefense
