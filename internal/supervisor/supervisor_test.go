@@ -18,6 +18,8 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"go.opendefense.cloud/krop-controller/internal/testlog"
 )
 
 func TestSupervisor_EnsureIsIdempotent_AndStopReleases(t *testing.T) {
@@ -115,5 +117,43 @@ func TestSupervisor_ChangedPublishRestarts_UnchangedDoesNot(t *testing.T) {
 	<-startedCh
 	if got := count(); got != 2 {
 		t.Fatalf("changed publish must restart: start called %d, want 2", got)
+	}
+}
+
+// TestSupervisor_LogsStartStopAndNoop pins the ADR 0013 tiers: starting and
+// stopping a manager are rare lifecycle events (default level), an Ensure on a
+// running manager is a V(2) no-op, and stopping an unknown export logs nothing.
+func TestSupervisor_LogsStartStopAndNoop(t *testing.T) {
+	startedCh := make(chan struct{}, 1)
+	s := New(func(ctx context.Context, _ string) error {
+		startedCh <- struct{}{}
+		<-ctx.Done()
+
+		return nil
+	})
+	lg, sink := testlog.New(2)
+	s.Log = lg
+
+	s.Ensure(context.Background(), "export-a")
+	<-startedCh
+	s.Ensure(context.Background(), "export-a")
+	s.Stop("export-a")
+	s.Stop("export-unknown")
+
+	for _, want := range []struct {
+		msg   string
+		level int
+	}{
+		{"starting instance manager", 0},
+		{"instance manager already running", 2},
+		{"stopping instance manager", 0},
+	} {
+		lines := sink.Find(want.msg)
+		if len(lines) != 1 {
+			t.Fatalf("want 1 %q line, got %d: %s", want.msg, len(lines), sink.Raw())
+		}
+		if lines[0].Level != want.level || lines[0].Values["export"] != "export-a" {
+			t.Fatalf("%q line wrong: level=%d %+v", want.msg, lines[0].Level, lines[0].Values)
+		}
 	}
 }
