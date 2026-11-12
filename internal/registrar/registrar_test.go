@@ -16,11 +16,14 @@ package registrar
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -155,5 +158,44 @@ func TestReconcile_DeleteWithoutFinalizerIsNoop(t *testing.T) {
 	}
 	if called {
 		t.Fatal("OnDeleted must not fire when our finalizer is absent")
+	}
+}
+
+// TestReconcile_FailureErrorNamesStage proves a publish failure's returned error
+// names the failing stage, so controller-runtime's default-level error line says
+// where publishing broke, while the status message keeps the plain error. A
+// pre-seeded graph cache skips the build; an invalid routing target then fails.
+func TestReconcile_FailureErrorNamesStage(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := kropv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("registering scheme: %v", err)
+	}
+	bp := &kropv1alpha1.ResourceGraphDefinition{Name: "widgets"}
+	bp.Spec.Resources = []*kropv1alpha1.Resource{{ID: "config", Target: "bogus"}}
+	specHash, err := SpecHash(bp.Spec)
+	if err != nil {
+		t.Fatalf("SpecHash: %v", err)
+	}
+	cache := NewGraphCache()
+	cache.Put("ws", "widgets", specHash, &krograph.Graph{})
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(bp).
+		WithStatusSubresource(&kropv1alpha1.ResourceGraphDefinition{}).
+		Build()
+	r := &Registrar{Client: c, Workspace: "ws", Cache: cache}
+
+	_, err = r.Reconcile(context.Background(), reconcile.Request{Name: "widgets"})
+	if err == nil || !strings.HasPrefix(err.Error(), "InvalidTarget: ") || !strings.Contains(err.Error(), "bogus") {
+		t.Fatalf("want error prefixed with the stage InvalidTarget, got %v", err)
+	}
+
+	got := &kropv1alpha1.ResourceGraphDefinition{}
+	if gerr := c.Get(context.Background(), types.NamespacedName{Name: "widgets"}, got); gerr != nil {
+		t.Fatalf("get blueprint: %v", gerr)
+	}
+	ready := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+	if ready == nil || ready.Reason != "InvalidTarget" || strings.HasPrefix(ready.Message, "InvalidTarget") {
+		t.Fatalf("status condition should keep reason and plain message, got %+v", ready)
 	}
 }

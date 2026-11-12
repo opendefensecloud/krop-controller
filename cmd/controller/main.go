@@ -423,7 +423,7 @@ func run() error {
 		Workspace: workspace,
 		Cache:     registrar.NewGraphCache(),
 		Source:    graphSource,
-		OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, routing map[string]kropengine.Target, changed bool) {
+		OnPublished: func(_, exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, routing map[string]kropengine.Target, changed bool) {
 			// Always update the served graph so a restarted startFn reads the latest.
 			registry.Set(exportName, servedBlueprint{graph: g, gvk: instanceGVK, routing: routing})
 			// When the compiled graph CHANGED (new blueprint or spec edit), stop the
