@@ -144,6 +144,8 @@ var version = "dev"
 // panics: controller-runtime would add one to every error line, but krop's errors
 // are reconcile errors whose message already says what failed, and a trace turns
 // each into a long multi-line field. --zap-stacktrace-level=error restores them.
+// Setting the level here also replaces --zap-devel's default (Warn); pass
+// --zap-stacktrace-level=warn with --zap-devel for that.
 func newZapOptions() zap.Options {
 	return zap.Options{StacktraceLevel: zapcore.PanicLevel}
 }

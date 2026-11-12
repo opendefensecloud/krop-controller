@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+Accepted.
 
 ## Context
 
@@ -30,6 +30,8 @@ of field names. Full detail: [leveled-logging design](../superpowers/specs/2026-
   controller-runtime's log sampling (100 lines per message per second, then 1 in 100)
   cannot drop them in bursts. Error lines carry no stack trace by default
   (`--zap-stacktrace-level=panic`). No per-pass lines.
+  Sampling applies to every level below V(2), so at V(1) the per-pass lines are
+  thinned when more than 100 passes end within a second; V(2) is unsampled.
 - **V(1) (`--zap-log-level=debug`): why each pass ended.** One line per instance pass with
   the outcome (`Complete`, `NotReady`, `Pending`, `ExternalNotFound`, `Failed`), the node
   that ended it, and kro's reason.
@@ -87,6 +89,8 @@ error). The provider had to `kubectl get` the child to tell "still creating" fro
 - A provider sees from the debug line whether a dependency is failing (`UpdateFailed`) or
   still being created, and reads the message with `kubectl get` when needed.
 - The residual risk is a controller that breaks the convention and writes a secret that
-  looks like a code into `reason`. krop accepts that risk.
+  looks like a code into `reason`. krop accepts that risk. The same applies to kro's
+  readiness error text, now logged as `reason`: it names expressions, but a CEL
+  evaluation error can quote the value it failed on (e.g. an invalid timestamp).
 - Only the `Ready` condition is read. Controllers that report errors in another condition
   (e.g. Crossplane's `Synced`) give no `readyReason` beyond their `Ready` reason.

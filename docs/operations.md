@@ -134,13 +134,20 @@ leader election runs multiple active managers and is unsupported.
   | `kind`, `cluster`, `namespace`, `name`, `instanceUID` | the instance: its kind, consumer logical cluster, namespace, name and UID |
   | `node`, `target`, `gvk`, `child`, `childNamespace`, `children` | the blueprint resource id, its target (`consumer` / `provider` / `host`), the child's `group/version/Kind` and its final (qualified) name; on deletion lines `children` lists each deleted child as `<group/version/Kind> <namespace>/<name>` |
   | `outcome`, `reason`, `ready` | how a pass or node ended, and kro's or the API server's message |
-| `dependency`, `readyReason` | for a `Pending` pass, the not-ready dependency it waits for; the reason code of the not-ready object's `Ready` condition (e.g. Config Connector's `UpdateFailed` or `DependencyNotReady`). The condition's message is never logged: `kubectl get` the child to read it |
+  | `dependency`, `readyReason` | for a `Pending` pass, the not-ready dependency it waits for; the reason code of the not-ready object's `Ready` condition (e.g. Config Connector's `UpdateFailed` or `DependencyNotReady`). The condition's message is never logged: `kubectl get` the child to read it |
 
   Below level `2`, controller-runtime samples the production log: after the first
   100 lines with the same message in a second, only every 100th is kept. Deletions
   are therefore logged as one line per instance pass and target, which keeps them
   under that limit unless more than 100 instances are deleted within one second.
+  At `debug`, `pass ended` is sampled too: when more than 100 passes end within one
+  second (e.g. right after a restart with many instances), most of their lines are
+  dropped, so a missing line does not mean the instance was not reconciled. Level
+  `2` turns sampling off and shows every line.
+
   Error lines carry no stack trace unless `--zap-stacktrace-level=error` is set.
+  krop sets this default itself, so `--zap-devel` no longer adds stack traces to
+  warnings either; pass `--zap-stacktrace-level=warn` with it for that.
 
   Logs never contain object content, only names, kinds, messages and the reason code
   of a not-ready `Ready` condition. `kubectl logs`
