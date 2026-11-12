@@ -20,13 +20,17 @@ import (
 	"testing"
 
 	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
+	"go.opendefense.cloud/krop-controller/internal/testlog"
 )
 
 var testGVK = schema.GroupVersionKind{Group: "krop.opendefense.cloud", Version: "v1alpha1", Kind: "KubernetesCluster"}
@@ -111,7 +115,8 @@ func TestPruneChildren_DeletesStaleKeepsApplied(t *testing.T) {
 	const uid = "uid-1"
 	desired := mkLabeledCM("desired-child", uid)
 	stale := mkLabeledCM("stale-child", uid)
-	consumer := fake.NewClientBuilder().WithObjects(desired, stale).Build()
+	stale2 := mkLabeledCM("stale-child-2", uid)
+	consumer := fake.NewClientBuilder().WithObjects(desired, stale, stale2).Build()
 
 	r := &Reconciler{
 		Graph:          graphWithConfigMapNode(),
@@ -127,8 +132,20 @@ func TestPruneChildren_DeletesStaleKeepsApplied(t *testing.T) {
 			Namespace: "default", Name: "desired-child",
 		}},
 	}
-	if err := r.pruneChildren(context.Background(), consumer, uid, applied); err != nil {
+	lg, sink := testlog.New(0)
+	if err := r.pruneChildren(log.IntoContext(context.Background(), lg), consumer, uid, applied); err != nil {
 		t.Fatalf("pruneChildren: %v", err)
+	}
+
+	// krop-initiated deletes are logged at the default level as one line per target
+	// (so log sampling cannot drop them in bursts); kept children are not listed.
+	pruned := sink.Find("pruned children")
+	if len(pruned) != 1 {
+		t.Fatalf("want 1 pruned children line, got %d: %s", len(pruned), sink.Raw())
+	}
+	if v := pruned[0].Values; pruned[0].Level != 0 || v["target"] != "consumer" ||
+		!slices.Equal(childrenOf(pruned[0]), []string{"/v1/ConfigMap default/stale-child", "/v1/ConfigMap default/stale-child-2"}) {
+		t.Fatalf("pruned children line wrong: level=%d %+v", pruned[0].Level, v)
 	}
 
 	// stale-child must be gone.
@@ -144,6 +161,110 @@ func TestPruneChildren_DeletesStaleKeepsApplied(t *testing.T) {
 	if err := consumer.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "desired-child"}, got); err != nil {
 		t.Fatalf("desired-child was wrongly pruned: %v", err)
 	}
+}
+
+// A child that is already terminating (e.g. held by its own finalizer) stays in
+// the List and is deleted again on every complete pass; only the first deletion is
+// news, so repeats must not be logged at the default level.
+func TestPruneChildren_TerminatingChildNotLogged(t *testing.T) {
+	const uid = "uid-1"
+	terminating := mkLabeledCM("terminating-child", uid)
+	terminating.SetFinalizers([]string{"example.com/hold"})
+	now := metav1.Now()
+	terminating.SetDeletionTimestamp(&now)
+	consumer := fake.NewClientBuilder().WithObjects(terminating).Build()
+	r := &Reconciler{Graph: graphWithConfigMapNode(), ProviderClient: fake.NewClientBuilder().Build(), InstanceGVK: testGVK, BlueprintName: "bp"}
+
+	lg, sink := testlog.New(0)
+	if err := r.pruneChildren(log.IntoContext(context.Background(), lg), consumer, uid, nil); err != nil {
+		t.Fatalf("pruneChildren: %v", err)
+	}
+	if n := len(sink.Find("pruned children")); n != 0 {
+		t.Fatalf("want no pruned children line for an already-terminating child, got %d: %s", n, sink.Raw())
+	}
+}
+
+// A child that vanished between List and Delete was not deleted by krop, so it
+// must not be logged as a deletion.
+func TestPruneChildren_NotFoundNotLogged(t *testing.T) {
+	const uid = "uid-2"
+	consumer := fake.NewClientBuilder().WithObjects(mkLabeledCM("gone-child", uid)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteOption) error {
+				return apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, obj.GetName())
+			},
+		}).Build()
+	r := &Reconciler{Graph: graphWithConfigMapNode(), ProviderClient: fake.NewClientBuilder().Build(), InstanceGVK: testGVK, BlueprintName: "bp"}
+
+	lg, sink := testlog.New(0)
+	if err := r.pruneChildren(log.IntoContext(context.Background(), lg), consumer, uid, nil); err != nil {
+		t.Fatalf("pruneChildren: %v", err)
+	}
+	if n := len(sink.Find("pruned children")); n != 0 {
+		t.Fatalf("want no pruned children line when Delete returns NotFound, got %d: %s", n, sink.Raw())
+	}
+}
+
+func TestDeleteChildren_LogsDeletions(t *testing.T) {
+	const uid = "uid-1"
+	consumer := fake.NewClientBuilder().WithObjects(mkLabeledCM("child", uid)).Build()
+	r := &Reconciler{
+		Graph:          graphWithConfigMapNode(),
+		ProviderClient: fake.NewClientBuilder().Build(),
+		InstanceGVK:    testGVK,
+		BlueprintName:  "bp",
+	}
+
+	lg, sink := testlog.New(0)
+	if err := r.deleteChildren(log.IntoContext(context.Background(), lg), consumer, uid); err != nil {
+		t.Fatalf("deleteChildren: %v", err)
+	}
+	deleted := sink.Find("deleted children")
+	if len(deleted) != 1 {
+		t.Fatalf("want 1 deleted children line, got %d: %s", len(deleted), sink.Raw())
+	}
+	if v := deleted[0].Values; deleted[0].Level != 0 || v["target"] != "consumer" ||
+		!slices.Equal(childrenOf(deleted[0]), []string{"/v1/ConfigMap default/child"}) {
+		t.Fatalf("deleted children line wrong: level=%d %+v", deleted[0].Level, v)
+	}
+}
+
+// A failed delete aborts the pass, but the children deleted before it are still
+// logged: they are gone, and the retry will not list them again.
+func TestDeleteChildren_LogsDeletionsBeforeError(t *testing.T) {
+	const uid = "uid-1"
+	consumer := fake.NewClientBuilder().WithObjects(mkLabeledCM("a-child", uid), mkLabeledCM("b-child", uid)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if obj.GetName() == "b-child" {
+					return apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, obj.GetName(), nil)
+				}
+
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &Reconciler{Graph: graphWithConfigMapNode(), ProviderClient: fake.NewClientBuilder().Build(), InstanceGVK: testGVK, BlueprintName: "bp"}
+
+	lg, sink := testlog.New(0)
+	if err := r.deleteChildren(log.IntoContext(context.Background(), lg), consumer, uid); err == nil {
+		t.Fatal("deleteChildren: want the forbidden delete to fail the pass")
+	}
+	deleted := sink.Find("deleted children")
+	if len(deleted) != 1 || !slices.Equal(childrenOf(deleted[0]), []string{"/v1/ConfigMap default/a-child"}) {
+		t.Fatalf("want one deleted children line listing a-child, got: %s", sink.Raw())
+	}
+}
+
+// childrenOf returns a captured line's children field as strings.
+func childrenOf(l testlog.Line) []string {
+	raw, _ := l.Values["children"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, c := range raw {
+		s, _ := c.(string)
+		out = append(out, s)
+	}
+
+	return out
 }
 
 func TestLivenessRecord_WriteThenDelete(t *testing.T) {

@@ -16,19 +16,25 @@ package registrar
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 
 	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kropv1alpha1 "go.opendefense.cloud/krop-controller/api/v1alpha1"
+	"go.opendefense.cloud/krop-controller/internal/testlog"
 )
 
 // TestReconcile_FinalizerTeardownOnDelete proves the deletion path: a blueprint
@@ -87,7 +93,8 @@ func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 		OnDeleted: func(export string) { stopped = append(stopped, export) },
 	}
 
-	res, err := r.Reconcile(context.Background(), reconcile.Request{
+	lg, sink := testlog.New(0)
+	res, err := r.Reconcile(log.IntoContext(context.Background(), lg), reconcile.Request{
 		Name: "widgets",
 	})
 	if err != nil {
@@ -95,6 +102,13 @@ func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 	}
 	if res != (reconcile.Result{}) {
 		t.Fatalf("delete path should not requeue, got %+v", res)
+	}
+
+	// Withdrawing the API is a deletion krop decides on: logged at the default level.
+	deleted := sink.Find("deleted APIExport")
+	if len(deleted) != 1 || deleted[0].Level != 0 || deleted[0].Values["export"] != exportName ||
+		!reflect.DeepEqual(deleted[0].Values["schemas"], []any{arsName}) {
+		t.Fatalf("want one default-level deleted APIExport line for %s, got: %s", exportName, sink.Raw())
 	}
 
 	if len(stopped) != 1 || stopped[0] != exportName {
@@ -122,6 +136,25 @@ func TestReconcile_FinalizerTeardownOnDelete(t *testing.T) {
 	}
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("unexpected Get error: %v", err)
+	}
+}
+
+// TestDeletePublishedAPI_AlreadyGoneNotLogged proves an APIExport that is already
+// gone (e.g. on the retry after a failed finalizer removal) is not logged as a
+// deletion: krop did not delete anything.
+func TestDeletePublishedAPI_AlreadyGoneNotLogged(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := apisv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatalf("registering scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	lg, sink := testlog.New(0)
+	if err := DeletePublishedAPI(log.IntoContext(context.Background(), lg), c, "widgets.example.com"); err != nil {
+		t.Fatalf("DeletePublishedAPI: %v", err)
+	}
+	if n := len(sink.Find("deleted APIExport")); n != 0 {
+		t.Fatalf("want no deleted APIExport line for an absent export, got: %s", sink.Raw())
 	}
 }
 
@@ -155,5 +188,44 @@ func TestReconcile_DeleteWithoutFinalizerIsNoop(t *testing.T) {
 	}
 	if called {
 		t.Fatal("OnDeleted must not fire when our finalizer is absent")
+	}
+}
+
+// TestReconcile_FailureErrorNamesStage proves a publish failure's returned error
+// names the failing stage, so controller-runtime's default-level error line says
+// where publishing broke, while the status message keeps the plain error. A
+// pre-seeded graph cache skips the build; an invalid routing target then fails.
+func TestReconcile_FailureErrorNamesStage(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := kropv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("registering scheme: %v", err)
+	}
+	bp := &kropv1alpha1.ResourceGraphDefinition{Name: "widgets"}
+	bp.Spec.Resources = []*kropv1alpha1.Resource{{ID: "config", Target: "bogus"}}
+	specHash, err := SpecHash(bp.Spec)
+	if err != nil {
+		t.Fatalf("SpecHash: %v", err)
+	}
+	cache := NewGraphCache()
+	cache.Put("ws", "widgets", specHash, &krograph.Graph{})
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(bp).
+		WithStatusSubresource(&kropv1alpha1.ResourceGraphDefinition{}).
+		Build()
+	r := &Registrar{Client: c, Workspace: "ws", Cache: cache}
+
+	_, err = r.Reconcile(context.Background(), reconcile.Request{Name: "widgets"})
+	if err == nil || !strings.HasPrefix(err.Error(), "InvalidTarget: ") || !strings.Contains(err.Error(), "bogus") {
+		t.Fatalf("want error prefixed with the stage InvalidTarget, got %v", err)
+	}
+
+	got := &kropv1alpha1.ResourceGraphDefinition{}
+	if gerr := c.Get(context.Background(), types.NamespacedName{Name: "widgets"}, got); gerr != nil {
+		t.Fatalf("get blueprint: %v", gerr)
+	}
+	ready := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+	if ready == nil || ready.Reason != "InvalidTarget" || strings.HasPrefix(ready.Message, "InvalidTarget") {
+		t.Fatalf("status condition should keep reason and plain message, got %+v", ready)
 	}
 }

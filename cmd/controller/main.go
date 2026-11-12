@@ -34,12 +34,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	corev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
 	tenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -97,6 +99,8 @@ const (
 // servedBlueprint is what the Registrar records on publish and the per-export
 // manager needs to serve: the compiled graph and the generated instance kind.
 type servedBlueprint struct {
+	// name is the blueprint (RGD) object name, the "blueprint" log field.
+	name    string
 	graph   *krograph.Graph
 	gvk     schema.GroupVersionKind
 	routing map[string]kropengine.Target
@@ -133,6 +137,18 @@ func (p *published) Delete(export string) {
 // version is the build version, injected at link time via
 // -ldflags "-X main.version=...". It defaults to "dev" for local builds.
 var version = "dev"
+
+// newZapOptions returns the logging defaults the zap flags start from. Encoding
+// stays controller-runtime's production JSON, the right default for a deployed
+// controller (--zap-devel opts into dev mode). Stack traces are recorded only for
+// panics: controller-runtime would add one to every error line, but krop's errors
+// are reconcile errors whose message already says what failed, and a trace turns
+// each into a long multi-line field. --zap-stacktrace-level=error restores them.
+// Setting the level here also replaces --zap-devel's default (Warn); pass
+// --zap-stacktrace-level=warn with --zap-devel for that.
+func newZapOptions() zap.Options {
+	return zap.Options{StacktraceLevel: zapcore.PanicLevel}
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -171,10 +187,8 @@ func run() error {
 			"Path to a kubeconfig for the host cluster to provision host-target children into. Defaults to in-cluster config; empty + no in-cluster config disables the host target.")
 	)
 
-	// zap logging flags (--zap-log-level, --zap-devel, --zap-encoder, ...). The
-	// zap.Options zero value defaults to production JSON encoding, which is the
-	// right default for a deployed controller; --zap-devel opts into dev mode.
-	var zapOpts zap.Options
+	// zap logging flags (--zap-log-level, --zap-devel, --zap-encoder, ...).
+	zapOpts := newZapOptions()
 	zapOpts.BindFlags(flag.CommandLine)
 
 	flag.Parse()
@@ -296,7 +310,7 @@ func run() error {
 	// startFn re-reads the registry and picks up the new graph (registry.Set runs
 	// before the Stop+Ensure, so the restarted startFn observes the update).
 	startFn := func(ctx context.Context, exportName string) error {
-		exportLog := entryLog.WithValues("apiExport", exportName)
+		exportLog := entryLog.WithValues("export", exportName)
 
 		sb, ok := registry.Get(exportName)
 		if !ok {
@@ -369,8 +383,6 @@ func run() error {
 		}
 
 		reconcileFn := mcreconcile.Func(func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-			l := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "name", req.Name)
-
 			cl, err := imgr.GetCluster(ctx, req.ClusterName)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("getting cluster %q: %w", req.ClusterName, err)
@@ -380,11 +392,11 @@ func run() error {
 			if err != nil {
 				return ctrl.Result{}, err
 			}
+			// The reconciler logs why the pass ended at V(1) (ADR 0013); nothing is
+			// logged here so the default level stays quiet.
 			if res.Requeue {
-				l.Info("reconciled; requeueing", "ready", res.Ready)
 				return ctrl.Result{RequeueAfter: requeueInterval}, nil
 			}
-			l.Info("reconciled", "ready", res.Ready)
 
 			return ctrl.Result{}, nil
 		})
@@ -401,13 +413,18 @@ func run() error {
 		if err := mcbuilder.ControllerManagedBy(imgr).
 			Named("krop-instance-" + exportName).
 			WithOptions(mccontroller.Options{SkipNameValidation: &skipNameValidation}).
+			// Tag every instance line, including controller-runtime's own error
+			// line, with the blueprint and the instance's identity (ADR 0013).
+			WithLogConstructor(kropctrl.InstanceLogConstructor(
+				imgr.GetLogger().WithValues("controller", "krop-instance-"+exportName),
+				sb.name, exportName, sb.gvk.Kind)).
 			For(newInstance(sb.gvk)).
 			Complete(reconcileFn); err != nil {
 			return fmt.Errorf("building krop-instance controller for %q: %w", exportName, err)
 		}
 
-		exportLog.Info("starting instance manager")
-
+		// The supervisor logs the manager start (ADR 0013); "using
+		// APIExportEndpointSlice" above marks the moment serving begins.
 		return imgr.Start(ctx)
 	}
 
@@ -423,9 +440,9 @@ func run() error {
 		Workspace: workspace,
 		Cache:     registrar.NewGraphCache(),
 		Source:    graphSource,
-		OnPublished: func(exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, routing map[string]kropengine.Target, changed bool) {
+		OnPublished: func(blueprint, exportName string, instanceGVK schema.GroupVersionKind, g *krograph.Graph, routing map[string]kropengine.Target, changed bool) {
 			// Always update the served graph so a restarted startFn reads the latest.
-			registry.Set(exportName, servedBlueprint{graph: g, gvk: instanceGVK, routing: routing})
+			registry.Set(exportName, servedBlueprint{name: blueprint, graph: g, gvk: instanceGVK, routing: routing})
 			// When the compiled graph CHANGED (new blueprint or spec edit), stop the
 			// running manager first so Ensure restarts it and its reconciler closure
 			// re-reads the updated registry graph — otherwise a live spec edit would
@@ -448,6 +465,16 @@ func run() error {
 	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&kropv1alpha1.ResourceGraphDefinition{}).
 		Named("krop-registrar").
+		// Tag registrar lines, including controller-runtime's error line, with
+		// the blueprint (RGD) name (ADR 0013).
+		WithLogConstructor(func(req *reconcile.Request) logr.Logger {
+			l := mgr.GetLogger().WithValues("controller", "krop-registrar")
+			if req != nil {
+				l = l.WithValues("blueprint", req.Name)
+			}
+
+			return l
+		}).
 		Complete(reconcile.Func(reg.Reconcile)); err != nil {
 		return fmt.Errorf("building registrar controller: %w", err)
 	}

@@ -18,4 +18,5 @@ grounded in the code on `main`.
 | [0010](0010-envtest-in-process-manager-bind-first.md) | envtest e2e drives an in-process manager against the vw with bind-first ordering |
 | [0011](0011-external-refs-and-host-target.md) | External refs + a `host` write target, routed by a per-resource `target` field |
 | [0012](0012-consumer-workspace-info-in-cel.md) | Surface the consumer's logical-cluster name to blueprint CEL via a runtime-only instance annotation |
+| [0013](0013-leveled-structured-logging.md) | Leveled, structured logging: quiet default, V(1) pass outcome, V(2) per node, fixed field contract |
 </content>

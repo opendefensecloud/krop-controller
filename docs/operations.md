@@ -59,6 +59,7 @@ The binary (`cmd/controller/main.go`) accepts:
 | `--leader-elect` | `false` | single active manager; creates a `coordination.k8s.io` Lease in the provider workspace |
 | `--leader-election-namespace` | `$POD_NAMESPACE` → `default` | namespace of the leader-election Lease (in the provider workspace) |
 | `--zap-log-level`, `--zap-devel`, `--zap-encoder`, … | production JSON | zap logging (controller-runtime) |
+| `--zap-stacktrace-level` | `panic` | level from which lines carry a Go stack trace; `error` restores controller-runtime's default |
 
 The kubeconfig is **not** a flag: the binary calls `ctrl.GetConfigOrDie()`, which
 honors `KUBECONFIG` (set by the chart to `/etc/kcp/<key>` when a kubeconfig Secret
@@ -115,7 +116,66 @@ leader election runs multiple active managers and is unsupported.
 - **Logs.** Structured zap; production JSON by default. Tune with `--zap-log-level`
   / `--zap-devel` via `controller.extraArgs`. The entrypoint logs the effective
   `version`, bind addresses, leader-election settings, and the derived provider
-  `workspace` on startup.
+  `workspace` on startup. Levels and fields follow
+  [ADR 0013](decisions/0013-leveled-structured-logging.md):
+
+  | `--zap-log-level` | Shows | Typical lines |
+  | --- | --- | --- |
+  | `info` (default) | errors, rare lifecycle, deletions krop decides on | reconcile errors; `published APIExport`, `deleted APIExport` (or `deleted APIResourceSchemas` when the export was already gone); `starting` / `stopping instance manager`; `pruned children`, `deleted children`, `swept orphaned children` (one line per instance pass and target) |
+  | `debug` (= V(1)) | why each instance pass ended | `pass ended` with `outcome` (`Complete`, `NotReady`, `Pending`, `ExternalNotFound`, `Failed`), `node`, `reason`; `APIExport unchanged` |
+  | `2` (= V(2)) | what each pass did | `node applied` / `node read` / `node skipped` per node; `liveness record fresh` |
+
+  Fields are the same in every component:
+
+  | Field | Meaning |
+  | --- | --- |
+  | `blueprint` | blueprint (RGD) name, e.g. `bucket` |
+  | `export` | APIExport name, e.g. `buckets.storage.api.opendefense.cloud` |
+  | `kind`, `cluster`, `namespace`, `name`, `instanceUID` | the instance: its kind, consumer logical cluster, namespace, name and UID |
+  | `node`, `target`, `gvk`, `child`, `childNamespace`, `children` | the blueprint resource id, its target (`consumer` / `provider` / `host`), the child's `group/version/Kind` and its final (qualified) name; on deletion lines `children` lists each deleted child as `<group/version/Kind> <namespace>/<name>` |
+  | `outcome`, `reason`, `ready` | how a pass or node ended, and kro's or the API server's message |
+  | `dependency`, `readyReason` | for a `Pending` pass, the not-ready dependency it waits for; the reason code of the not-ready object's `Ready` condition (e.g. Config Connector's `UpdateFailed` or `DependencyNotReady`). The condition's message is never logged: `kubectl get` the child to read it |
+
+  Below level `2`, controller-runtime samples the production log: after the first
+  100 lines with the same message in a second, only every 100th is kept. Deletions
+  are therefore logged as one line per instance pass and target, which keeps them
+  under that limit unless more than 100 instances are deleted within one second.
+  At `debug`, `pass ended` is sampled too: when more than 100 passes end within one
+  second (e.g. right after a restart with many instances), most of their lines are
+  dropped, so a missing line does not mean the instance was not reconciled. Level
+  `2` turns sampling off and shows every line.
+
+  Error lines carry no stack trace unless `--zap-stacktrace-level=error` is set.
+  krop sets this default itself, so `--zap-devel` no longer adds stack traces to
+  warnings either; pass `--zap-stacktrace-level=warn` with it for that.
+
+  krop never logs object content itself: only names, kinds, messages and the reason
+  code of a not-ready `Ready` condition. Error messages from kro or the API server
+  are logged as they are and may quote field values
+  ([ADR 0013](decisions/0013-leveled-structured-logging.md)).
+
+  `kubectl logs` shows the same JSON. In Loki, adjust the stream selector to your log
+  shipper's labels. Shippers usually add `namespace` and `cluster` as **stream labels** (the
+  krop pod's own namespace and cluster), and a plain `| json` then renames the
+  instance's fields to `namespace_extracted` / `cluster_extracted`. Extract the
+  fields you filter on explicitly under names of their own:
+
+  ```logql
+  # Everything about one ordered Bucket
+  {app_kubernetes_io_name="krop-controller"}
+    | json inst_kind="kind", inst_ns="namespace", inst_name="name"
+    | inst_kind="Bucket" | inst_ns="team-a" | inst_name="logs"
+
+  # Every pass of the bucket blueprint that is waiting on a dependency (needs debug or 2)
+  {app_kubernetes_io_name="krop-controller"}
+    | json blueprint="blueprint", outcome="outcome", node="node", reason="reason"
+    | blueprint="bucket" | outcome="Pending"
+
+  # Passes waiting on a dependency that is failing, not just still being created
+  {app_kubernetes_io_name="krop-controller"}
+    | json outcome="outcome", dependency="dependency", readyReason="readyReason"
+    | outcome="Pending" | readyReason="UpdateFailed"
+  ```
 - **Status conditions** — the primary operational signal:
 
   | Object | Condition | Meaning |

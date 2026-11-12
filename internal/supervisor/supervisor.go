@@ -23,6 +23,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -39,6 +40,10 @@ type entry struct {
 
 // Supervisor tracks running per-export managers.
 type Supervisor struct {
+	// Log receives the supervisor's lifecycle lines; New defaults it to the
+	// "supervisor" logger. Set it before the first Ensure.
+	Log logr.Logger
+
 	start StartFunc
 
 	mu      sync.Mutex
@@ -47,7 +52,7 @@ type Supervisor struct {
 
 // New returns a Supervisor that uses start to launch each manager.
 func New(start StartFunc) *Supervisor {
-	return &Supervisor{start: start, running: map[string]*entry{}}
+	return &Supervisor{Log: logf.Log.WithName("supervisor"), start: start, running: map[string]*entry{}}
 }
 
 // Ensure starts a manager for exportName if not already running (idempotent).
@@ -55,8 +60,11 @@ func (s *Supervisor) Ensure(parent context.Context, exportName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.running[exportName]; ok {
+		s.Log.V(2).Info("instance manager already running", "export", exportName)
+
 		return
 	}
+	s.Log.Info("starting instance manager", "export", exportName)
 	ctx, cancel := context.WithCancel(parent)
 	e := &entry{cancel: cancel}
 	s.running[exportName] = e
@@ -72,7 +80,7 @@ func (s *Supervisor) Ensure(parent context.Context, exportName string) {
 		// self-heals by restarting it).
 		if err := s.start(ctx, exportName); err != nil &&
 			!errors.Is(err, context.Canceled) && ctx.Err() == nil {
-			logf.Log.WithName("supervisor").Error(err, "instance-serving manager terminated with error", "export", exportName)
+			s.Log.Error(err, "instance-serving manager terminated with error", "export", exportName)
 		}
 	}()
 }
@@ -103,6 +111,7 @@ func (s *Supervisor) Stop(exportName string) {
 	delete(s.running, exportName)
 	s.mu.Unlock()
 	if ok {
+		s.Log.Info("stopping instance manager", "export", exportName)
 		e.cancel()
 	}
 }

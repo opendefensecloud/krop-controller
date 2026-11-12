@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/kcp-dev/logicalcluster/v3"
 	clusterclient "github.com/kcp-dev/multicluster-provider/client"
 	"github.com/kcp-dev/multicluster-provider/envtest"
@@ -43,11 +44,13 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kropv1alpha1 "go.opendefense.cloud/krop-controller/api/v1alpha1"
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 	"go.opendefense.cloud/krop-controller/internal/registrar"
+	"go.opendefense.cloud/krop-controller/internal/testlog"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -96,6 +99,8 @@ var _ = Describe("M4a Registrar publication", Ordered, func() {
 		cli          clusterclient.ClusterClient
 		providerPath logicalcluster.Path
 		wsClient     client.Client
+		reg          *registrar.Registrar
+		publishSink  *testlog.Sink
 	)
 
 	BeforeAll(func() {
@@ -126,17 +131,45 @@ var _ = Describe("M4a Registrar publication", Ordered, func() {
 		applyFile(ctx, cli, providerPath, blueprintPath)
 
 		// Run the Registrar once (direct-reconcile).
-		reg := &registrar.Registrar{
+		reg = &registrar.Registrar{
 			Client:    wsClient,
 			Workspace: providerPath.String(),
 			Cache:     registrar.NewGraphCache(),
 			Source:    graphSource,
 		}
-		// The blueprint CRD is cluster-scoped (workspace-level); no namespace.
-		_, err = reg.Reconcile(ctx, reconcile.Request{
+		// The blueprint CRD is cluster-scoped (workspace-level); no namespace. The
+		// first publish's log lines are captured for the logging spec below.
+		// The logger carries blueprint like main.go's registrar log constructor.
+		var lg logr.Logger
+		lg, publishSink = testlog.New(1)
+		lg = lg.WithValues("blueprint", "kubernetescluster")
+		_, err = reg.Reconcile(log.IntoContext(ctx, lg), reconcile.Request{
 			Name: "kubernetescluster",
 		})
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("logs a publish at the default level only when the spec changed", func() {
+		published := publishSink.Find("published APIExport")
+		Expect(published).To(HaveLen(1))
+		Expect(published[0].Level).To(Equal(0))
+		Expect(published[0].Values).To(HaveKeyWithValue("blueprint", "kubernetescluster"))
+		Expect(published[0].Values).To(HaveKeyWithValue("export", expectedExportName))
+		Expect(published[0].Values).To(HaveKey("specHash"))
+		// The constructor already tags blueprint; the line must not repeat the key.
+		Expect(strings.Count(published[0].Raw, `"blueprint"`)).To(Equal(1), published[0].Raw)
+
+		// An unchanged resync logs at V(1) only.
+		lg, sink := testlog.New(1)
+		_, err := reg.Reconcile(log.IntoContext(ctx, lg.WithValues("blueprint", "kubernetescluster")),
+			reconcile.Request{Name: "kubernetescluster"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sink.Find("published APIExport")).To(BeEmpty())
+		unchanged := sink.Find("APIExport unchanged")
+		Expect(unchanged).To(HaveLen(1))
+		Expect(unchanged[0].Level).To(Equal(1))
+		Expect(unchanged[0].Values).To(HaveKeyWithValue("export", expectedExportName))
+		Expect(strings.Count(unchanged[0].Raw, `"blueprint"`)).To(Equal(1), unchanged[0].Raw)
 	})
 
 	It("publishes a correct APIExport + ARS + claims and writes blueprint status", func() {

@@ -62,7 +62,7 @@ type Registrar struct {
 	// the wiring can restart the manager only when the compiled graph changed.
 	// routing is the resource-id → target map extracted from the blueprint spec
 	// (empty targets default to consumer downstream). May be nil.
-	OnPublished func(exportName string, instanceGVK schema.GroupVersionKind, g *graph.Graph, routing map[string]kropengine.Target, changed bool)
+	OnPublished func(blueprint, exportName string, instanceGVK schema.GroupVersionKind, g *graph.Graph, routing map[string]kropengine.Target, changed bool)
 	// OnDeleted is called during finalizer-based teardown of a deleted blueprint so
 	// the supervisor can stop the export's instance manager. May be nil.
 	OnDeleted func(exportName string)
@@ -201,7 +201,7 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 		Kind:    ars.Spec.Names.Kind,
 	}
 	if r.OnPublished != nil {
-		r.OnPublished(exportName, instanceGVK, g, routing, changed)
+		r.OnPublished(bp.Name, exportName, instanceGVK, g, routing, changed)
 	}
 
 	// Re-Get the published APIExport to observe status.identityHash, which kcp
@@ -213,7 +213,7 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 	published := &apisv1alpha2.APIExport{}
 	if err := r.Client.Get(ctx, client.ObjectKey{Name: exportName}, published); err != nil {
 		logf.FromContext(ctx).V(1).Info("re-Get of published APIExport for identityHash failed; resync will retry",
-			"apiexport", exportName, "err", err.Error())
+			"export", exportName, "err", err.Error())
 	} else {
 		identityHash = published.Status.IdentityHash
 	}
@@ -229,6 +229,15 @@ func (r *Registrar) Reconcile(ctx context.Context, req reconcile.Request) (recon
 	})
 	if err := r.Client.Status().Update(ctx, bp); err != nil {
 		return reconcile.Result{}, fmt.Errorf("updating blueprint status: %w", err)
+	}
+	// A new or edited blueprint is a rare lifecycle event worth the default level;
+	// the unchanged 5m resync only shows at V(1) (ADR 0013). blueprint comes from
+	// the controller's log constructor (cmd/controller/main.go).
+	l := logf.FromContext(ctx).WithValues("export", exportName, "specHash", specHash)
+	if changed {
+		l.Info("published APIExport")
+	} else {
+		l.V(1).Info("APIExport unchanged")
 	}
 	// Periodically re-drive so Reconcile → OnPublished → Ensure re-triggers: the
 	// production self-heal path. Ensure is a no-op while the manager runs and
@@ -250,5 +259,7 @@ func (r *Registrar) fail(ctx context.Context, bp *kropv1alpha1.ResourceGraphDefi
 	})
 	_ = r.Client.Status().Update(ctx, bp) // best-effort; the returned error requeues.
 
-	return reconcile.Result{}, err
+	// Prefix the stage so controller-runtime's default-level error line says where
+	// publishing broke; the status message above keeps the plain error.
+	return reconcile.Result{}, fmt.Errorf("%s: %w", reason, err)
 }

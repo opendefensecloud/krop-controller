@@ -3,6 +3,8 @@
 # (provider AgentRequest + consumer ConfigMap reading ${agentRequest.status.token})
 # wrapped as our own ResourceGraphDefinition CRD under krop.opendefense.cloud/v1alpha1.
 # The Registrar auto-publishes it as an APIExport + APIResourceSchema + claims.
+# The AgentRequest is ready once its token is set, so the consumer ConfigMap waits on
+# a not-ready dependency (the #72 shape) until then.
 apiVersion: krop.opendefense.cloud/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
@@ -28,6 +30,8 @@ spec:
           namespace: default
         spec:
           region: ${schema.spec.region}
+      readyWhen:
+        - ${agentRequest.status.token != ""}
     - id: config
       target: consumer
       template:

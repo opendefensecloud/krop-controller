@@ -32,6 +32,7 @@ import (
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kropengine "go.opendefense.cloud/krop-controller/internal/engine"
 )
@@ -103,6 +104,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	if err := consumerClient.Get(ctx, key, inst); err != nil {
 		return kropengine.Result{}, client.IgnoreNotFound(err)
 	}
+	// Tag every later line (engine, prune, GC) with the instance UID, which joins
+	// instance lines with the orphan sweeper's (ADR 0013).
+	l := log.FromContext(ctx).WithValues("instanceUID", string(inst.GetUID()))
+	ctx = log.IntoContext(ctx, l)
 
 	// Deletion: run cross-workspace GC, then drop the finalizer.
 	if inst.GetDeletionTimestamp() != nil {
@@ -189,6 +194,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	}
 
 	res, err := kropengine.New().Reconcile(ctx, rt, appliers, readers, r.Routing)
+	// Why this pass ended, also on an error return (ADR 0013: V(1)).
+	l.V(1).Info("pass ended", passEndFields(res)...)
 	if err != nil {
 		return res, err
 	}
@@ -320,6 +327,21 @@ func writeConditions(inst *unstructured.Unstructured, conditions []metav1.Condit
 	return unstructured.SetNestedSlice(inst.Object, raw, "status", "conditions")
 }
 
+// passEndFields returns the fields of the V(1) "pass ended" line. dependency and
+// readyReason are added only when set: they say which not-ready dependency a
+// Pending pass waits for and that object's Ready reason code (#72).
+func passEndFields(res kropengine.Result) []any {
+	kv := []any{"outcome", res.Outcome, "node", res.Node, "reason", res.Reason, "ready", res.Ready}
+	if res.Dependency != "" {
+		kv = append(kv, "dependency", res.Dependency)
+	}
+	if res.ReadyReason != "" {
+		kv = append(kv, "readyReason", res.ReadyReason)
+	}
+
+	return kv
+}
+
 // deleteChildren deletes all children of the instance (by the instance-uid
 // label) in both target workspaces, enumerating each target's child GVKs from
 // the compiled graph. Consumer children are also owner-ref backstopped.
@@ -333,17 +355,29 @@ func (r *Reconciler) deleteChildren(ctx context.Context, consumerClient client.C
 		clients[kropengine.TargetHost] = r.HostClient
 	}
 	for target, cl := range clients {
-		for _, gvk := range r.childGVKs(target) {
-			list := &unstructured.UnstructuredList{}
-			list.SetGroupVersionKind(gvk)
-			if err := cl.List(ctx, list, sel); err != nil {
-				return fmt.Errorf("listing %s children: %w", gvk.Kind, err)
-			}
-			for i := range list.Items {
-				if err := cl.Delete(ctx, &list.Items[i]); client.IgnoreNotFound(err) != nil {
-					return fmt.Errorf("deleting %s %s: %w", gvk.Kind, list.Items[i].GetName(), err)
+		var deleted deletedChildren
+		err := func() error {
+			for _, gvk := range r.childGVKs(target) {
+				list := &unstructured.UnstructuredList{}
+				list.SetGroupVersionKind(gvk)
+				if err := cl.List(ctx, list, sel); err != nil {
+					return fmt.Errorf("listing %s children: %w", gvk.Kind, err)
+				}
+				for i := range list.Items {
+					item := &list.Items[i]
+					err := cl.Delete(ctx, item)
+					if client.IgnoreNotFound(err) != nil {
+						return fmt.Errorf("deleting %s %s: %w", gvk.Kind, item.GetName(), err)
+					}
+					deleted.add(kropengine.GVKString(gvk), item, err)
 				}
 			}
+
+			return nil
+		}()
+		deleted.log(ctx, "deleted children", target)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -370,26 +404,69 @@ func (r *Reconciler) pruneChildren(ctx context.Context, consumerClient client.Cl
 		for _, id := range applied[target] {
 			keep[id] = true
 		}
-		for _, gvk := range r.childGVKs(target) {
-			list := &unstructured.UnstructuredList{}
-			list.SetGroupVersionKind(gvk)
-			if err := cl.List(ctx, list, sel); err != nil {
-				return fmt.Errorf("listing %s children for prune: %w", gvk.Kind, err)
-			}
-			for i := range list.Items {
-				item := &list.Items[i]
-				id := kropengine.ChildID{GVK: gvk, Namespace: item.GetNamespace(), Name: item.GetName()}
-				if keep[id] {
-					continue
+		var pruned deletedChildren
+		err := func() error {
+			for _, gvk := range r.childGVKs(target) {
+				list := &unstructured.UnstructuredList{}
+				list.SetGroupVersionKind(gvk)
+				if err := cl.List(ctx, list, sel); err != nil {
+					return fmt.Errorf("listing %s children for prune: %w", gvk.Kind, err)
 				}
-				if err := cl.Delete(ctx, item); client.IgnoreNotFound(err) != nil {
-					return fmt.Errorf("pruning %s %s: %w", gvk.Kind, item.GetName(), err)
+				for i := range list.Items {
+					item := &list.Items[i]
+					id := kropengine.ChildID{GVK: gvk, Namespace: item.GetNamespace(), Name: item.GetName()}
+					if keep[id] {
+						continue
+					}
+					err := cl.Delete(ctx, item)
+					if client.IgnoreNotFound(err) != nil {
+						return fmt.Errorf("pruning %s %s: %w", gvk.Kind, item.GetName(), err)
+					}
+					pruned.add(kropengine.GVKString(gvk), item, err)
 				}
 			}
+
+			return nil
+		}()
+		pruned.log(ctx, "pruned children", target)
+		if err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+// deletedChildren collects the children krop deleted on its own (prune,
+// instance-deletion GC, orphan sweep) in one target during one pass, so they are
+// logged as a single default-level line (ADR 0013). One line per target, not per
+// child: below V(2), controller-runtime's production logger samples repeated
+// messages (100 per second, then 1 in 100), which would drop per-child lines when
+// many instances are deleted at once.
+type deletedChildren []string
+
+// add records child as deleted, as "<group/version/Kind> <namespace>/<name>" (just
+// the name when cluster-scoped). Only a deletion krop actually started counts: a
+// child that was already terminating (as listed, e.g. held by its own finalizer)
+// is deleted again on every pass, and a NotFound (deleteErr) means it was already
+// gone.
+func (d *deletedChildren) add(gvk string, child *unstructured.Unstructured, deleteErr error) {
+	if deleteErr != nil || child.GetDeletionTimestamp() != nil {
+		return
+	}
+	name := child.GetName()
+	if ns := child.GetNamespace(); ns != "" {
+		name = ns + "/" + name
+	}
+	*d = append(*d, gvk+" "+name)
+}
+
+// log writes the collected deletions as one line; nothing when none were made.
+func (d deletedChildren) log(ctx context.Context, msg string, target kropengine.Target) {
+	if len(d) == 0 {
+		return
+	}
+	log.FromContext(ctx).Info(msg, "target", string(target), "children", []string(d))
 }
 
 // childGVKs returns the distinct child GVKs of the given target from the graph.

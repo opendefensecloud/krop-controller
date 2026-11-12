@@ -817,6 +817,8 @@ func deployChart() {
 		"--set", "image.pullPolicy=Never",
 		"--set", "kcp.kubeconfigSecret.name=krop-kubeconfig",
 		"--set", "serviceAccount.name="+serviceAccountName,
+		// Every log tier, so the specs can check the lines of each (ADR 0013).
+		"--set", "controller.extraArgs[0]=--zap-log-level=2",
 		"--wait", "--timeout", "180s",
 	)
 
