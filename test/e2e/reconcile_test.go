@@ -205,7 +205,10 @@ var _ = Describe("krop-controller full-stack e2e (deployed pod)", Ordered, func(
 	It("stays quiet at the default level while the instance is steady", func() {
 		// The instance is Complete; its 30 s heartbeat passes must show at V(1) and
 		// write nothing at the default level (ADR 0013).
-		since := time.Now()
+		// kubectl logs --since-time has whole-second precision: start the window at
+		// the next full second and wait for it, so it holds no earlier line.
+		since := time.Now().Truncate(time.Second).Add(time.Second)
+		time.Sleep(time.Until(since))
 		waitFor(2*time.Minute, "a Complete heartbeat pass of the steady instance", func() error {
 			lines, _ := controllerLog(since)
 			if len(findLog(lines, "pass ended", map[string]string{"name": "demo", "outcome": "Complete"})) == 0 {
