@@ -182,11 +182,16 @@ leader election runs multiple active managers and is unsupported.
   | --- | --- | --- |
   | Blueprint (RGD) `.status` | `Ready=True` reason `Published` | published; `.status.exportedAPI` names the APIExport, `.status.identityHash`/`.observedSpecHash` recorded |
   | Blueprint `.status` | `Ready=False` reason `BuildFailed` / `PublishFailed` / `ClaimIdentityUnresolved` / `HashFailed` | publish failed; read `.message` |
-  | Instance `.status` | `Ready` | `True` when every included child passed readiness |
-  | Instance `.status` | `Progressing` | `True` while still converging (e.g. a consumer child pending on a provider status) |
+  | Instance `.status` | `Ready` | `True` when every included child passed readiness. When `False`, the reason says what the consumer does about it: `InProgress` (wait), `ReferenceNotFound`, `ReferenceFailed`, `ApplyFailed`, `EvaluationFailed`, `RoutingFailed` |
+  | Instance `.status` | `Progressing` | `True` while still converging; the message is only the share of ready nodes, e.g. `33%` |
+  | Instance `.status.state` | — | `ACTIVE` (ready), `IN_PROGRESS`, or `ERROR` when a retry will not help (the STATE column) |
 
-  Instances also carry the blueprint's `schema.status.*` CEL projections (e.g.
-  `configMapName`, `agentToken`) alongside these conditions.
+  krop writes this status on every pass, including failed ones. The `Ready` message
+  passes the consumer's own errors through; for anything from the provider workspace
+  or the host it names the node, the class of failure and `ref <instance UID>`
+  instead ([ADR 0014](decisions/0014-consumer-safe-instance-status.md)). Instances
+  also carry the blueprint's `schema.status.*` CEL projections (e.g. `configMapName`,
+  `agentToken`) alongside these conditions.
 
 ---
 
@@ -264,6 +269,7 @@ These values live as `orphanStaleAfter` / `orphanSweepInterval` in
 | Consumer child never appears | claim not accepted | Consumer's APIBinding must set the derived claim to `state: Accepted` (not `Rejected`/absent). Compare `test/fixtures/apibinding-kubernetescluster.yaml` vs `...-noclaim.yaml`. |
 | Consumer child never appears (foreign type) | foreign identity unresolved | The foreign consumer-target type's export must be **bound in the provider workspace** so its `identityHash` resolves. Otherwise publish fails `ClaimIdentityUnresolved`. |
 | Consumer child **pends** indefinitely | cross-target CEL dependency unmet | The child reads a provider child's `status.*` that is not set. Set/await that status (downstream fulfilment). Instance stays `Progressing`. |
+| Consumer reports `... ref <uid>` in `Ready` | a provider- or host-side failure, hidden from the consumer | Search the controller log for the UID: the reconcile error names `instance <uid>`, and at V(1)/V(2) every line of the instance carries `instanceUID`. Its children carry the label `krop.opendefense.cloud/instance-uid=<uid>`. |
 | APIExport endpoint slice empty | no consumer bound yet | Expected before the first bind — **bind first**. The instance-serving path engages a logical cluster only once bound. |
 | Blueprint stuck `Ready=False` `BuildFailed` | graph build failed | A provider-target child CRD is not **served in the provider workspace**, or a CEL/schema error. kro type-checks CEL against served CRDs — apply the child CRD first. Read `.status.conditions[Ready].message`. |
 | Blueprint stuck `Ready=False` `ClaimIdentityUnresolved` | foreign export not bound | Bind the foreign consumer-target type's export in the provider workspace; the resync republishes. |

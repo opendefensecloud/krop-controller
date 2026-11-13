@@ -311,7 +311,7 @@ sequenceDiagram
     Rec->>CC: prune labeled children not in applied set
     Rec->>PC: prune labeled children not in applied set
   end
-  Rec->>CC: project status.* (CEL) + set Ready/Progressing conditions
+  Rec->>CC: project status.* (CEL) + set Ready/Progressing conditions + state (also on a failed pass)
   Rec-->>VW: requeue (~30s heartbeat)
 ```
 

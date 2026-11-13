@@ -221,7 +221,7 @@ Templates and `schema.status` use kro's `${...}` CEL. The handles krop supports:
 **Cross-target dependencies pend, they do not fail.** If a consumer child reads a
 provider child's status that is not set yet, that child **pends** — the reconcile
 reports "not complete", requeues (~30s), and the instance's `Ready` condition
-stays `False`/`Progressing` until the referenced status appears. Only then does
+stays `False`/`InProgress` until the referenced status appears. Only then does
 the consumer child materialize. (This is exactly the token flow in the
 walkthrough.) Because pending suppresses pruning of not-yet-applied children,
 a partially-converged instance never has its work reclaimed mid-flight — see
