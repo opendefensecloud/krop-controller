@@ -23,6 +23,24 @@
       "groupSlug": "go-version"
     },
     {
+      "description": "kcp (sdk 0.33) and multicluster-provider don't support Kubernetes 0.37 yet. controller-runtime and multicluster-runtime 0.25 and controller-tools 0.24 require it, so they are held too. Lift all four rules together.",
+      "matchPackageNames": ["/^k8s\\.io/(api|apimachinery|apiextensions-apiserver|apiserver|client-go|component-base)$/"],
+      "allowedVersions": "<0.37.0"
+    },
+    {
+      "matchPackageNames": ["sigs.k8s.io/controller-runtime", "sigs.k8s.io/multicluster-runtime"],
+      "allowedVersions": "<0.25.0"
+    },
+    {
+      "matchDepNames": ["controller-gen"],
+      "allowedVersions": "<0.24.0"
+    },
+    {
+      "description": "kro v0.10 removed pkg/runtime, which the engine is built on. See #75.",
+      "matchPackageNames": ["github.com/kubernetes-sigs/kro"],
+      "allowedVersions": "<0.10.0"
+    },
+    {
       "description": "The chart's own image follows appVersion, which the release workflow sets; a pinned digest would override it in every release",
       "matchManagers": ["helm-values"],
       "matchPackageNames": ["ghcr.io/opendefensecloud/krop-controller"],

@@ -411,7 +411,7 @@ Full detail — identity minting, RBAC fixtures, and the claim/acceptance handsh
 | Tier | Command | What it covers |
 | --- | --- | --- |
 | **Unit** | `go test` (part of `make test`) | The engine loop, routing, applier decorators, naming, claims derivation, hashing, supervisor lifecycle — with fakes/in-memory graphs, no cluster. |
-| **envtest** | `make test` | Registrar + Reconciler + Sweeper against a **real in-process kcp** (binary v0.30.0, matching multicluster-provider v0.8.0's tested version). Publishes an APIExport, binds a consumer, drives an in-process multicluster manager against the virtual workspace, and asserts dual-target apply / prune / spec-change restart / orphan sweep. |
+| **envtest** | `make test` | Registrar + Reconciler + Sweeper against a **real in-process kcp** (binary v0.33.6, `KCP_VERSION` in the Makefile). Publishes an APIExport, binds a consumer, drives an in-process multicluster manager against the virtual workspace, and asserts dual-target apply / prune / spec-change restart / orphan sweep. |
 | **Full-stack e2e** | `make test-e2e` | The controller **as a deployed pod** in a kind cluster, against real kcp provisioned by kcp-operator, installed via krop's own Helm chart. Includes a **negative least-privilege** spec (a consumer that does not accept a claim → the consumer-target write is rejected). Runs the pod at `--zap-log-level=2` and checks its log against [ADR 0013](decisions/0013-leveled-structured-logging.md): key lines and their levels, a Pending pass naming its not-ready dependency and Ready reason, a silent default level for a steady instance, and no duplicate keys, stack traces or condition messages. |
 
 The envtest tier drives the same `Reconciler` the deployed controller uses. Its

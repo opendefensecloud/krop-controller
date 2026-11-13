@@ -45,11 +45,14 @@ const (
 	kindClusterName = "krop-e2e"
 	kcpNamespace    = "kcp-system"
 	kropNamespace   = "krop-system"
-	certManagerVer  = "v1.17.2"
-	imageName       = "krop-controller:e2e"
-	imageRepo       = "krop-controller"
-	imageTag        = "e2e"
-	helmTimeout     = "300s"
+	certManagerVer  = "v1.21.3"
+	// Version of the kcp-operator Helm chart, not of the operator itself: the
+	// chart is versioned separately (chart 0.7.13 ships operator v0.10.3).
+	kcpOperatorChartVersion = "0.7.13"
+	imageName               = "krop-controller:e2e"
+	imageRepo               = "krop-controller"
+	imageTag                = "e2e"
+	helmTimeout             = "300s"
 
 	// serviceAccountName is the controller pod's ServiceAccount. saIdentity is the
 	// kcp identity string that ServiceAccount authenticates as through the mounted
@@ -103,6 +106,33 @@ func lookupTool(envVar, fallback string) string {
 	}
 
 	return p
+}
+
+// kcpImageBlock renders the optional `image:` stanza for RootShard and
+// FrontProxy specs. E2E_KCP_VERSION pins the kcp server version (the Makefile
+// defaults it to KCP_VERSION); when unset, kcp-operator picks its own default.
+// indent is the number of spaces the stanza is nested at.
+func kcpImageBlock(indent int) string {
+	v := os.Getenv("E2E_KCP_VERSION")
+	if v == "" {
+		return ""
+	}
+
+	pad := strings.Repeat(" ", indent)
+
+	return fmt.Sprintf("\n%[1]simage:\n%[1]s  tag: v%[2]s", pad, v)
+}
+
+// kcpProxyImageBlock renders the `proxy.image` stanza for a RootShard spec. The
+// root shard's built-in proxy is always deployed, and takes its image from
+// spec.proxy.image independently of spec.image, so it needs pinning separately.
+func kcpProxyImageBlock(indent int) string {
+	inner := kcpImageBlock(indent + 2)
+	if inner == "" {
+		return ""
+	}
+
+	return fmt.Sprintf("\n%sproxy:%s", strings.Repeat(" ", indent), inner)
 }
 
 func init() {
@@ -332,6 +362,7 @@ func deployKCPOperator() {
 		"--namespace", kcpNamespace,
 		"--create-namespace",
 		"--wait", "--timeout", helmTimeout,
+		"--version", kcpOperatorChartVersion,
 	)
 }
 
@@ -488,7 +519,7 @@ kind: RootShard
 metadata:
   name: root
   namespace: %[1]s
-spec:
+spec:%[3]s%[4]s
   external:
     hostname: %[2]s
     port: 6443
@@ -520,7 +551,7 @@ spec:
           hostAliases:
             - ip: "10.96.200.200"
               hostnames:
-                - "%[2]s"`, kcpNamespace, fpHostname))
+                - "%[2]s"`, kcpNamespace, fpHostname, kcpImageBlock(2), kcpProxyImageBlock(2)))
 
 	// FrontProxy with a fixed ClusterIP + NodePort for host access.
 	applyToKind(fmt.Sprintf(`apiVersion: operator.kcp.io/v1alpha1
@@ -528,7 +559,7 @@ kind: FrontProxy
 metadata:
   name: kcp
   namespace: %[1]s
-spec:
+spec:%[3]s
   rootShard:
     ref:
       name: root
@@ -546,7 +577,7 @@ spec:
           - localhost
           - "%[2]s"
         ipAddresses:
-          - "127.0.0.1"`, kcpNamespace, fpHostname))
+          - "127.0.0.1"`, kcpNamespace, fpHostname, kcpImageBlock(2)))
 
 	waitFor(4*time.Minute, "root shard running", func() error {
 		out, err := kindctlNoFail("-n", kcpNamespace, "get", "rootshard", "root",

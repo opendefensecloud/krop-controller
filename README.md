@@ -224,12 +224,12 @@ make lint           # license headers, shellcheck, golangci-lint
 
 - `make test` runs unit tests plus an **envtest** tier against a real in-process
   kcp (the Makefile downloads the pinned kcp test binary — `KCP_VERSION`, currently
-  `0.30.0` — into `bin/`).
+  `0.33.6` — into `bin/`).
 - `make test-e2e` requires Docker (kind) and takes several minutes.
-- A **Nix flake devshell** provides the pinned toolchain (Go 1.26.4 via
+- A **Nix flake devshell** provides the pinned toolchain (Go 1.27.4 via
   `dev-kit`): run `nix develop` (or use `direnv` with the checked-in `.envrc`).
 
-Module: `go.opendefense.cloud/krop-controller` (Go 1.26).
+Module: `go.opendefense.cloud/krop-controller` (Go 1.27).
 
 ---
 
