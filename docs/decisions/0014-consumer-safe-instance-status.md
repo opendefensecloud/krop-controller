@@ -25,7 +25,10 @@ cluster. Before this decision (issue #49):
 krop writes the instance status on **every** pass, failed ones included, from the
 engine `Result` (which now also records the failed step, the node counts and the
 not-ready object's `Ready` message). It uses only fields kro's generated CRD already
-has, so the published schema does not change.
+has, so the published schema does not change. A failed pass stops at the failing
+node, so the blueprint's status fields that read later nodes do not resolve; they keep
+their last value instead of disappearing. kro avoids the gap by reading every node
+before it applies; krop observes a node by applying it.
 
 - **`Ready` condition, reason by what the consumer does about it.** `InProgress` (wait:
   a node or its data is not ready), `ReferenceNotFound`, `ReferenceFailed`, `ApplyFailed`,
@@ -68,3 +71,6 @@ APIResourceSchema). Blueprint-authored error messages are a possible follow-up.
 - A failure that keeps recurring but could clear (e.g. a host API server down for an
   hour) stays `IN_PROGRESS`; there is no time-based escalation to `ERROR`.
 - A consumer child whose `Ready` message changes often causes as many status writes.
+- During a failure, the status fields of nodes after the failing one show their last
+  value, not the live one. A pending pass still drops a field whose dependency is not
+  available, as kro does.

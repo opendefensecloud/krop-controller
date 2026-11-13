@@ -251,6 +251,17 @@ func (r *Reconciler) writeStatus(ctx context.Context, consumerClient client.Clie
 
 	if desired, perr := kropengine.ProjectStatus(rt); perr == nil {
 		if status, found, _ := unstructured.NestedMap(desired.Object, "status"); found {
+			// A failed pass stops at the failing node, so the nodes after it are
+			// not observed and their status fields do not resolve. Keep their last
+			// values rather than drop them for the length of the failure. A pending
+			// pass still replaces, also when it returns an error (an includeWhen
+			// that pends): a field whose dependency is not available disappears,
+			// as on a kro instance.
+			if res.Outcome == kropengine.OutcomeFailed {
+				prev, _, _ := unstructured.NestedMap(inst.Object, "status")
+				tmpl, _, _ := unstructured.NestedMap(r.Graph.Instance.Template.Object, "status")
+				keepUnresolved(status, prev, tmpl)
+			}
 			_ = unstructured.SetNestedMap(inst.Object, status, "status")
 		}
 	}
@@ -268,6 +279,31 @@ func (r *Reconciler) writeStatus(ctx context.Context, consumerClient client.Clie
 		_ = unstructured.SetNestedField(inst.Object, instanceState(res, err), "status", "state")
 	}
 	_ = consumerClient.Status().Update(ctx, inst)
+}
+
+// keepUnresolved copies into projected the fields of prev that projected lacks,
+// for the fields tmpl (the blueprint's schema.status) declares. It descends only
+// into objects tmpl spells out, so an expression's value, a map included, is
+// kept or replaced whole. Resolved values win.
+func keepUnresolved(projected, prev, tmpl map[string]any) {
+	for k, tv := range tmpl {
+		pv, ok := prev[k]
+		if !ok {
+			continue
+		}
+		cur, ok := projected[k]
+		if !ok {
+			projected[k] = pv
+
+			continue
+		}
+		sub, isObject := tv.(map[string]any)
+		curMap, curIsMap := cur.(map[string]any)
+		prevMap, prevIsMap := pv.(map[string]any)
+		if isObject && curIsMap && prevIsMap {
+			keepUnresolved(curMap, prevMap, sub)
+		}
+	}
 }
 
 // blueprintDeclaresState reports whether the blueprint maps status.state itself.

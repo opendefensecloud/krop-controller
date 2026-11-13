@@ -250,3 +250,39 @@ func TestApplyResultConditions_PreservesTransitionTime(t *testing.T) {
 		t.Fatalf("lastTransitionTime changed on an unchanged status: %v -> %v", first, second)
 	}
 }
+
+// A failed pass keeps the status fields it could not resolve, also inside an
+// object whose other fields it did resolve; resolved values win. It follows the
+// blueprint's schema.status: an expression's value, a map included, is kept or
+// replaced whole, and a field the blueprint no longer has is not brought back.
+func TestKeepUnresolved(t *testing.T) {
+	tmpl := map[string]any{
+		"bucketId":       "${bucket.spec.resourceID}",
+		"endpoints":      "${credentials.data}",
+		"bucketSecret":   map[string]any{"name": "${credentials.metadata.name}"},
+		"providerStatus": map[string]any{"projectId": "${tenant.status.projectId}", "selfLink": "${bucket.status.selfLink}"},
+	}
+	projected := map[string]any{
+		"bucketId":       "new",
+		"endpoints":      map[string]any{},
+		"providerStatus": map[string]any{"projectId": "p-1"},
+	}
+	prev := map[string]any{
+		"bucketId":       "old",
+		"endpoints":      map[string]any{"endpoint": "https://old.example"},
+		"bucketSecret":   map[string]any{"name": "demo-credentials"},
+		"providerStatus": map[string]any{"projectId": "p-0", "selfLink": "https://example/b/demo"},
+		"removedField":   "from an earlier blueprint",
+	}
+	keepUnresolved(projected, prev, tmpl)
+
+	want := map[string]any{
+		"bucketId":       "new",
+		"endpoints":      map[string]any{},
+		"bucketSecret":   map[string]any{"name": "demo-credentials"},
+		"providerStatus": map[string]any{"projectId": "p-1", "selfLink": "https://example/b/demo"},
+	}
+	if !reflect.DeepEqual(projected, want) {
+		t.Fatalf("keepUnresolved = %v, want %v", projected, want)
+	}
+}

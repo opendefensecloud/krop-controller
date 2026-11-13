@@ -38,13 +38,14 @@ var (
 
 // bucketRGD: project (consumer externalRef) -> bucket (host StorageBucket,
 // ready on its Ready condition) -> credentials (consumer ConfigMap standing in
-// for the Secret, carrying the bucket URL).
-func bucketRGD() *krov1alpha1.ResourceGraphDefinition {
+// for the Secret, carrying the bucket URL). status.url reads the last node.
+// credentialsIncludeWhen, if set, gates the credentials node.
+func bucketRGD(credentialsIncludeWhen ...string) *krov1alpha1.ResourceGraphDefinition {
 	rgd := generator.NewResourceGraphDefinition(
 		"bucket",
 		generator.WithSchema("Bucket", "v1alpha1",
 			map[string]any{"name": "string", "projectRef": "string", "retentionDays": `string | default="0"`},
-			map[string]any{"bucketId": "${bucket.spec.resourceID}"},
+			map[string]any{"bucketId": "${bucket.spec.resourceID}", "url": "${credentials.data.url}"},
 		),
 		generator.WithExternalRef("project", &krov1alpha1.ExternalRef{
 			APIVersion: bucketProjectGVK.GroupVersion().String(), Kind: bucketProjectGVK.Kind,
@@ -63,7 +64,7 @@ func bucketRGD() *krov1alpha1.ResourceGraphDefinition {
 			"apiVersion": "v1", "kind": "ConfigMap",
 			"metadata": map[string]any{"name": "${schema.metadata.name}-credentials", "namespace": "default"},
 			"data":     map[string]any{"url": "${bucket.status.url}"},
-		}, nil, nil),
+		}, nil, credentialsIncludeWhen),
 	)
 	rgd.Spec.Schema.Group = bucketGVK.Group
 
@@ -96,7 +97,7 @@ func bucketMetadataSchema() spec.Schema {
 
 // buildBucketGraph compiles bucketRGD against kro's fake resolver, extended with
 // the Project and StorageBucket kinds the blueprint uses.
-func buildBucketGraph(t *testing.T) *krograph.Graph {
+func buildBucketGraph(t *testing.T, credentialsIncludeWhen ...string) *krograph.Graph {
 	t.Helper()
 	str := spec.Schema{Type: []string{"string"}}
 	cond := spec.Schema{Type: []string{"object"}, Properties: map[string]spec.Schema{
@@ -123,7 +124,7 @@ func buildBucketGraph(t *testing.T) *krograph.Graph {
 	b := &krograph.Builder{}
 	setBuilderField(b, "schemaResolver", res)
 	setBuilderField(b, "restMapper", meta.RESTMapper(rm))
-	g, err := b.NewResourceGraphDefinition(bucketRGD(), krograph.Config{MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000})
+	g, err := b.NewResourceGraphDefinition(bucketRGD(credentialsIncludeWhen...), krograph.Config{MaxCollectionSize: 1000, MaxCollectionDimensionSize: 1000})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -144,6 +145,9 @@ func kccReady(status, reason, message string) map[string]any {
 // message; run with -v to see each status.
 func TestReconcile_BucketStatus(t *testing.T) {
 	g := buildBucketGraph(t)
+	// The same blueprint with credentials gated on the bucket: a not-ready bucket
+	// makes the gate itself pend, which the engine returns as an error.
+	gGated := buildBucketGraph(t, `${bucket.status.url != ""}`)
 	kyverno := &apierrors.StatusError{ErrStatus: metav1.Status{
 		Status: metav1.StatusFailure, Code: 400, Reason: metav1.StatusReasonBadRequest,
 		Message: `admission webhook "vpol.validate.kyverno.svc-fail-finegrained-exclusive-storage-buckets" denied the request: ` +
@@ -154,6 +158,7 @@ func TestReconcile_BucketStatus(t *testing.T) {
 
 	cases := []struct {
 		name          string
+		gated         bool // credentials behind includeWhen (gGated)
 		generation    int64
 		retentionDays string
 		noProject     bool
@@ -161,6 +166,8 @@ func TestReconcile_BucketStatus(t *testing.T) {
 		bucketStatus  map[string]any
 		applyErr      error
 		consumerErr   error
+		prevStatus    map[string]any // the instance's status before the pass
+		wantStatus    map[string]any // blueprint status fields after it; nil = absent
 		wantReason    string
 		wantMessage   string
 		wantProgress  string
@@ -192,8 +199,31 @@ func TestReconcile_BucketStatus(t *testing.T) {
 			wantReason:   reasonApplyFailed,
 			wantMessage:  `credentials: Operation cannot be fulfilled on configmaps "demo-credentials": Apply failed with 1 conflict: conflict with "kubectl-client-side-apply": .data.url`,
 			wantProgress: "66%", wantState: stateInProgress},
+		{name: "failed pass keeps the fields of nodes it did not reach", generation: 1,
+			bucketStatus: bucketReady,
+			consumerErr:  apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, "demo-credentials", fmt.Errorf("conflict")),
+			prevStatus:   map[string]any{"bucketId": "stale", "url": "gs://acme-prod-demo"},
+			wantStatus:   map[string]any{"bucketId": "acme-prod-demo", "url": "gs://acme-prod-demo"},
+			wantReason:   reasonApplyFailed,
+			wantMessage:  `credentials: Operation cannot be fulfilled on configmaps "demo-credentials": conflict`,
+			wantProgress: "66%", wantState: stateInProgress},
+		{name: "pending pass drops the fields of nodes it could not resolve", generation: 1,
+			bucketStatus: kccReady("False", "Updating", "Update in progress"),
+			prevStatus:   map[string]any{"bucketId": "stale", "url": "gs://acme-prod-demo"},
+			wantStatus:   map[string]any{"bucketId": "acme-prod-demo", "url": nil},
+			wantReason:   reasonInProgress, wantMessage: "bucket: not ready (Updating), ref uid-1", wantProgress: "33%", wantState: stateInProgress},
+		{name: "pending includeWhen drops the fields of nodes it could not resolve", generation: 1, gated: true,
+			bucketStatus: kccReady("False", "Updating", "Update in progress"),
+			prevStatus:   map[string]any{"bucketId": "stale", "url": "gs://acme-prod-demo"},
+			wantStatus:   map[string]any{"bucketId": "acme-prod-demo", "url": nil},
+			wantReason:   reasonInProgress, wantMessage: "bucket: not ready (Updating), ref uid-1", wantProgress: "33%", wantState: stateInProgress},
+		{name: "pending pass that resolves no field clears them all", generation: 1, noProject: true,
+			prevStatus: map[string]any{"bucketId": "acme-prod-demo", "url": "gs://acme-prod-demo"},
+			wantStatus: map[string]any{"bucketId": nil, "url": nil},
+			wantReason: reasonReferenceNotFound, wantMessage: `project: projects.project.opendefense.cloud "acme" not found`, wantProgress: "0%", wantState: stateInProgress},
 		{name: "all ready", generation: 1,
 			bucketStatus: bucketReady,
+			wantStatus:   map[string]any{"bucketId": "acme-prod-demo", "url": "gs://acme-prod-demo"},
 			wantReason:   reasonReady, wantMessage: "all resources are ready", wantProgress: "100%", wantState: stateActive},
 	}
 
@@ -212,6 +242,9 @@ func TestReconcile_BucketStatus(t *testing.T) {
 			_ = unstructured.SetNestedField(inst.Object, tc.retentionDays, "spec", "retentionDays")
 			if tc.retentionDays == "" {
 				_ = unstructured.SetNestedField(inst.Object, "0", "spec", "retentionDays")
+			}
+			if tc.prevStatus != nil {
+				inst.Object["status"] = tc.prevStatus
 			}
 
 			objs := []client.Object{inst}
@@ -242,7 +275,8 @@ func TestReconcile_BucketStatus(t *testing.T) {
 				}).Build()
 
 			// The host stands in for Config Connector: Apply either is denied or
-			// succeeds, and Get returns the bucket with the status KCC would set.
+			// succeeds, and Get returns the bucket with the applied spec and the
+			// status KCC would set.
 			host := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
 				Apply: func(context.Context, client.WithWatch, k8sruntime.ApplyConfiguration, ...client.ApplyOption) error {
 					return tc.applyErr
@@ -251,6 +285,7 @@ func TestReconcile_BucketStatus(t *testing.T) {
 					u := obj.(*unstructured.Unstructured)
 					u.SetName(key.Name)
 					u.SetNamespace(key.Namespace)
+					_ = unstructured.SetNestedField(u.Object, "acme-prod-demo", "spec", "resourceID")
 					if tc.bucketStatus != nil {
 						u.Object["status"] = tc.bucketStatus
 					}
@@ -259,8 +294,12 @@ func TestReconcile_BucketStatus(t *testing.T) {
 				},
 			}).Build()
 
+			graph := g
+			if tc.gated {
+				graph = gGated
+			}
 			r := &Reconciler{
-				Graph:          g,
+				Graph:          graph,
 				ProviderClient: fake.NewClientBuilder().Build(),
 				HostClient:     host,
 				InstanceGVK:    bucketGVK,
@@ -297,6 +336,15 @@ func TestReconcile_BucketStatus(t *testing.T) {
 			for _, hostText := range []string{"kyverno", "GCS name", "googleapi", "acme-prod", "host"} {
 				if strings.Contains(ready.Message, hostText) {
 					t.Errorf("Ready message leaks host text %q: %s", hostText, ready.Message)
+				}
+			}
+			for field, want := range tc.wantStatus {
+				v, found, _ := unstructured.NestedFieldNoCopy(got.Object, "status", field)
+				if want == nil && found {
+					t.Errorf("status.%s = %v, want absent", field, v)
+				}
+				if want != nil && v != want {
+					t.Errorf("status.%s = %v, want %v", field, v, want)
 				}
 			}
 			if ready.ObservedGeneration != tc.generation {
