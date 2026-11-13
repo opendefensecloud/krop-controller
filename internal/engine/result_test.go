@@ -6,6 +6,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -151,7 +152,9 @@ func TestReconcile_ReadyMessage(t *testing.T) {
 	})
 }
 
-func TestReadyMessage(t *testing.T) {
+// The reason and message come from the same condition: a reason that is not a
+// plain code is dropped, never replaced by another object's reason.
+func TestNotReadyCondition_Message(t *testing.T) {
 	obj := func(mutate func(*unstructured.Unstructured)) *unstructured.Unstructured {
 		u := &unstructured.Unstructured{Object: map[string]any{}}
 		if mutate != nil {
@@ -161,18 +164,21 @@ func TestReadyMessage(t *testing.T) {
 		return u
 	}
 	for _, tc := range []struct {
-		desc string
-		objs []*unstructured.Unstructured
-		want string
+		desc                    string
+		objs                    []*unstructured.Unstructured
+		wantReason, wantMessage string
 	}{
-		{"not ready", []*unstructured.Unstructured{obj(withReady("False", "UpdateFailed", "quota exceeded"))}, "quota exceeded"},
-		{"ready", []*unstructured.Unstructured{obj(withReady("True", "UpToDate", "all good"))}, ""},
-		{"no conditions", []*unstructured.Unstructured{obj(nil)}, ""},
+		{"not ready", []*unstructured.Unstructured{obj(withReady("False", "UpdateFailed", "quota exceeded"))}, "UpdateFailed", "quota exceeded"},
+		{"ready", []*unstructured.Unstructured{obj(withReady("True", "UpToDate", "all good"))}, "", ""},
+		{"no conditions", []*unstructured.Unstructured{obj(nil)}, "", ""},
 		{"first not-ready item of a collection",
-			[]*unstructured.Unstructured{obj(withReady("True", "UpToDate", "fine")), obj(withReady("False", "Creating", "second"))}, "second"},
+			[]*unstructured.Unstructured{obj(withReady("True", "UpToDate", "fine")), obj(withReady("False", "Creating", "second"))}, "Creating", "second"},
+		{"free-text reason is not replaced by a later item's",
+			[]*unstructured.Unstructured{obj(withReady("False", strings.Repeat("A", 65), "first failure")), obj(withReady("False", "Creating", "second"))}, "", "first failure"},
 	} {
-		if got := readyMessage(tc.objs); got != tc.want {
-			t.Errorf("%s: readyMessage = %q, want %q", tc.desc, got, tc.want)
+		reason, msg := notReadyCondition(tc.objs)
+		if reason != tc.wantReason || msg != tc.wantMessage {
+			t.Errorf("%s: notReadyCondition = %q, %q, want %q, %q", tc.desc, reason, msg, tc.wantReason, tc.wantMessage)
 		}
 	}
 }

@@ -70,7 +70,7 @@ type Result struct {
 	Dependency string
 	// ReadyReason is the reason code of the Ready condition of the not-ready
 	// object: Dependency's when set, else Node's (NotReady). Empty when that object
-	// has no such condition or its reason is not a plain code (see readyReason).
+	// has no such condition or its reason is not a plain code (see notReadyCondition).
 	ReadyReason string
 	// ReadyMessage is the message of that same Ready condition, free text the
 	// child's controller wrote. It goes to the instance status, never to logs.
@@ -270,8 +270,7 @@ func (r *Result) notReady(seen, seenMsg map[string]string, nodeID string, readyE
 
 		return ""
 	}
-	rr := readyReason(observed)
-	msg := readyMessage(observed)
+	rr, msg := notReadyCondition(observed)
 	seen[nodeID], seenMsg[nodeID] = rr, msg
 	r.Ready, r.Requeue = false, true
 	if r.Node == "" {
