@@ -216,12 +216,14 @@ Templates and `schema.status` use kro's `${...}` CEL. The handles krop supports:
   [Consumer workspace info in CEL](#consumer-workspace-info-in-cel).
 - **`schema.status.*`** — CEL projections written back onto each instance's
   `.status`. In the example, `endpoint: ${connection.data.endpoint}` and
-  `vpcID: ${vpc.status.vpcID}`.
+  `vpcID: ${vpc.status.vpcID}`. A field whose resources are not available is left
+  out, as on a kro instance, except on a pass that fails: it stops at the failing
+  resource, and the fields that read resources after it keep their last value.
 
 **Cross-target dependencies pend, they do not fail.** If a consumer child reads a
 provider child's status that is not set yet, that child **pends** — the reconcile
 reports "not complete", requeues (~30s), and the instance's `Ready` condition
-stays `False`/`Progressing` until the referenced status appears. Only then does
+stays `False`/`InProgress` until the referenced status appears. Only then does
 the consumer child materialize. (This is exactly the token flow in the
 walkthrough.) Because pending suppresses pruning of not-yet-applied children,
 a partially-converged instance never has its work reclaimed mid-flight — see

@@ -15,7 +15,6 @@ import (
 	krograph "github.com/kubernetes-sigs/kro/pkg/graph"
 	kroruntime "github.com/kubernetes-sigs/kro/pkg/runtime"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -34,9 +33,8 @@ const (
 	// (a dependency is pending or a child is not yet ready).
 	conditionProgressing = "Progressing"
 
-	reasonReady       = "Ready"
-	reasonProgressing = "Progressing"
-	reasonReconciled  = "Reconciled"
+	reasonReady      = "Ready"
+	reasonReconciled = "Reconciled"
 )
 
 // defaultRecordNamespace is the provider-workspace namespace holding liveness
@@ -186,7 +184,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	// Why this pass ended, also on an error return (ADR 0013: V(1)).
 	l.V(1).Info("pass ended", passEndFields(res)...)
 	if err != nil {
-		return res, err
+		// Report the failure on the instance too, so the consumer sees what krop
+		// tried and why it failed rather than the previous pass's status (#49).
+		r.writeStatus(ctx, consumerClient, inst, rt, res, err)
+
+		// The returned error is logged at the default level without the instance
+		// UID; name it so the ref in the consumer's status finds this error.
+		return res, fmt.Errorf("instance %s: %w", inst.GetUID(), err)
 	}
 
 	// Refresh the provider-side liveness record on EVERY non-deleting pass that
@@ -231,6 +235,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	// covers the fully-ready complete pass so the heartbeat never stops.
 	res.Requeue = true
 
+	r.writeStatus(ctx, consumerClient, inst, rt, res, nil)
+
+	return res, nil
+}
+
+// writeStatus projects the blueprint's CEL status and the engine Result and
+// error (nil unless the pass failed) onto inst and writes it to the consumer. A
+// failed write is not an error: the next pass writes again.
+func (r *Reconciler) writeStatus(ctx context.Context, consumerClient client.Client, inst *unstructured.Unstructured, rt *kroruntime.Runtime, res kropengine.Result, err error) {
 	// Read the persisted conditions BEFORE projecting the CEL status: SetNestedMap
 	// below REPLACES the whole status object, which would otherwise drop the
 	// conditions (and reset their lastTransitionTime) every pass.
@@ -238,6 +251,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 
 	if desired, perr := kropengine.ProjectStatus(rt); perr == nil {
 		if status, found, _ := unstructured.NestedMap(desired.Object, "status"); found {
+			// A failed pass stops at the failing node, so the nodes after it are
+			// not observed and their status fields do not resolve. Keep their last
+			// values rather than drop them for the length of the failure. A pending
+			// pass still replaces, also when it returns an error (an includeWhen
+			// that pends): a field whose dependency is not available disappears,
+			// as on a kro instance.
+			if res.Outcome == kropengine.OutcomeFailed {
+				prev, _, _ := unstructured.NestedMap(inst.Object, "status")
+				tmpl, _, _ := unstructured.NestedMap(r.Graph.Instance.Template.Object, "status")
+				keepUnresolved(status, prev, tmpl)
+			}
 			_ = unstructured.SetNestedMap(inst.Object, status, "status")
 		}
 	}
@@ -246,36 +270,50 @@ func (r *Reconciler) Reconcile(ctx context.Context, consumerClient client.Client
 	// tell a converging instance from a wedged one. kro's SynthesizeCRD generates
 	// status.conditions into the served instance schema (statusFieldsOverride=true
 	// in kro's graph builder), so these persist through kcp's schema pruning.
-	applyResultConditions(&conditions, res, inst.GetGeneration())
+	applyResultConditions(&conditions, res, r.report(res, err, string(inst.GetUID())), inst.GetGeneration())
 	_ = writeConditions(inst, conditions)
-	_ = consumerClient.Status().Update(ctx, inst)
 
-	return res, nil
+	// status.state backs the STATE printer column kro generates. A blueprint that
+	// declares its own status.state keeps the value projected above.
+	if !r.blueprintDeclaresState() {
+		_ = unstructured.SetNestedField(inst.Object, instanceState(res, err), "status", "state")
+	}
+	_ = consumerClient.Status().Update(ctx, inst)
 }
 
-// applyResultConditions updates the Ready and Progressing conditions in place
-// from the engine Result. Ready is True only when every node passed readiness;
-// Progressing is True while the instance is still converging.
-func applyResultConditions(conditions *[]metav1.Condition, res kropengine.Result, generation int64) {
-	ready := metav1.Condition{Type: conditionReady, ObservedGeneration: generation}
-	progressing := metav1.Condition{Type: conditionProgressing, ObservedGeneration: generation}
-	if res.Ready {
-		ready.Status = metav1.ConditionTrue
-		ready.Reason = reasonReady
-		ready.Message = "all resources are ready"
-		progressing.Status = metav1.ConditionFalse
-		progressing.Reason = reasonReconciled
-		progressing.Message = "reconcile complete"
-	} else {
-		ready.Status = metav1.ConditionFalse
-		ready.Reason = reasonProgressing
-		ready.Message = "waiting for resources to become ready"
-		progressing.Status = metav1.ConditionTrue
-		progressing.Reason = reasonProgressing
-		progressing.Message = "reconcile in progress"
+// keepUnresolved copies into projected the fields of prev that projected lacks,
+// for the fields tmpl (the blueprint's schema.status) declares. It descends only
+// into objects tmpl spells out, so an expression's value, a map included, is
+// kept or replaced whole. Resolved values win.
+func keepUnresolved(projected, prev, tmpl map[string]any) {
+	for k, tv := range tmpl {
+		pv, ok := prev[k]
+		if !ok {
+			continue
+		}
+		cur, ok := projected[k]
+		if !ok {
+			projected[k] = pv
+
+			continue
+		}
+		sub, isObject := tv.(map[string]any)
+		curMap, curIsMap := cur.(map[string]any)
+		prevMap, prevIsMap := pv.(map[string]any)
+		if isObject && curIsMap && prevIsMap {
+			keepUnresolved(curMap, prevMap, sub)
+		}
 	}
-	meta.SetStatusCondition(conditions, ready)
-	meta.SetStatusCondition(conditions, progressing)
+}
+
+// blueprintDeclaresState reports whether the blueprint maps status.state itself.
+func (r *Reconciler) blueprintDeclaresState() bool {
+	if r.Graph == nil || r.Graph.Instance == nil || r.Graph.Instance.Template == nil {
+		return false
+	}
+	_, found, _ := unstructured.NestedFieldNoCopy(r.Graph.Instance.Template.Object, "status", "state")
+
+	return found
 }
 
 // readConditions extracts the instance's status.conditions as typed

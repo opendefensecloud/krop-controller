@@ -19,4 +19,5 @@ grounded in the code on `main`.
 | [0011](0011-external-refs-and-host-target.md) | External refs + a `host` write target, routed by a per-resource `target` field |
 | [0012](0012-consumer-workspace-info-in-cel.md) | Surface the consumer's logical-cluster name to blueprint CEL via a runtime-only instance annotation |
 | [0013](0013-leveled-structured-logging.md) | Leveled, structured logging: quiet default, V(1) pass outcome, V(2) per node, fixed field contract |
+| [0014](0014-consumer-safe-instance-status.md) | Consumer-safe instance status: classified errors with a ref, percentage progress, `ERROR` only when a retry will not help |
 </content>

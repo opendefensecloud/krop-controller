@@ -316,8 +316,8 @@ func TestReadyReason(t *testing.T) {
 		{"first not-ready item of a collection",
 			[]*unstructured.Unstructured{obj(withReady("True", "UpToDate", "")), obj(withReady("False", "DependencyNotReady", ""))}, "DependencyNotReady"},
 	} {
-		if got := readyReason(tc.objs); got != tc.want {
-			t.Errorf("%s: readyReason = %q, want %q", tc.desc, got, tc.want)
+		if got, _ := notReadyCondition(tc.objs); got != tc.want {
+			t.Errorf("%s: notReadyCondition reason = %q, want %q", tc.desc, got, tc.want)
 		}
 	}
 }

@@ -29,14 +29,17 @@ var conditionReason = regexp.MustCompile(`^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])
 
 const maxReadyReasonLen = 64
 
-// readyReason returns the reason of the first Ready condition among objs whose
-// status is not True, e.g. Config Connector's UpdateFailed or DependencyNotReady.
-// It is the only status value krop logs (ADR 0013): the reason is a code meant
-// for programs, whereas the condition's message is free text another controller
-// wrote, often copied from a cloud API error, and may contain anything. A reason
-// that is not a plain code (wrong format or longer than maxReadyReasonLen) is
-// treated as free text and dropped.
-func readyReason(objs []*unstructured.Unstructured) string {
+// notReadyCondition returns the reason and message of the first Ready condition
+// among objs whose status is not True, e.g. Config Connector's UpdateFailed or
+// DependencyNotReady, both from that one condition.
+//
+// The reason is the only status value krop logs (ADR 0013): it is a code meant
+// for programs, whereas the message is free text another controller wrote, often
+// copied from a cloud API error, and may contain anything. A reason that is not a
+// plain code (wrong format or longer than maxReadyReasonLen) is treated as free
+// text and returned empty. The message feeds the instance status, which the
+// consumer reads (#49), and is never logged.
+func notReadyCondition(objs []*unstructured.Unstructured) (reason, message string) {
 	for _, o := range objs {
 		raw, _, _ := unstructured.NestedFieldNoCopy(o.Object, "status", "conditions")
 		conds, _ := raw.([]any)
@@ -45,21 +48,24 @@ func readyReason(objs []*unstructured.Unstructured) string {
 			if !ok || m["type"] != "Ready" || m["status"] == "True" {
 				continue
 			}
-			reason, _ := m["reason"].(string)
-			if len(reason) <= maxReadyReasonLen && conditionReason.MatchString(reason) {
-				return reason
+			reason, _ = m["reason"].(string)
+			message, _ = m["message"].(string)
+			if len(reason) > maxReadyReasonLen || !conditionReason.MatchString(reason) {
+				reason = ""
 			}
+
+			return reason, message
 		}
 	}
 
-	return ""
+	return "", ""
 }
 
 // logNode writes one V(2) line for a node the pass applied or read. It logs only
 // identities (names, GVK, target) and readiness, never object content: children
 // may carry secrets in status. A single resource logs child (+childNamespace),
 // a collection logs the children's names. A not-ready node adds its Ready
-// condition's reasonCode as readyReason, when it has one (see readyReason).
+// condition's reasonCode as readyReason, when it has one (see notReadyCondition).
 func logNode(l logr.Logger, msg, nodeID string, target Target, gvk schema.GroupVersionKind,
 	observed []*unstructured.Unstructured, collection bool, readyErr error, reasonCode string) {
 	v := l.V(nodeLogLevel)
