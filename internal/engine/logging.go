@@ -55,6 +55,27 @@ func readyReason(objs []*unstructured.Unstructured) string {
 	return ""
 }
 
+// readyMessage returns the message of the first Ready condition among objs whose
+// status is not True, the free text readyReason leaves out. It feeds the instance
+// status, which the consumer reads (#49), and is never logged.
+func readyMessage(objs []*unstructured.Unstructured) string {
+	for _, o := range objs {
+		raw, _, _ := unstructured.NestedFieldNoCopy(o.Object, "status", "conditions")
+		conds, _ := raw.([]any)
+		for _, c := range conds {
+			m, ok := c.(map[string]any)
+			if !ok || m["type"] != "Ready" || m["status"] == "True" {
+				continue
+			}
+			msg, _ := m["message"].(string)
+
+			return msg
+		}
+	}
+
+	return ""
+}
+
 // logNode writes one V(2) line for a node the pass applied or read. It logs only
 // identities (names, GVK, target) and readiness, never object content: children
 // may carry secrets in status. A single resource logs child (+childNamespace),
