@@ -43,7 +43,7 @@ jobs:
           persist-credentials: false
       - id: go-version
         uses: opendefensecloud/dev-kit/.github/actions/get-go-version@983ddfc02224cbb84e8fdf875683525881b96a72 # v4.0.0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ steps.go-version.outputs.version }}
       - name: lint-license-and-shell
@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ needs.lint.outputs.go-version }}
       - name: test
