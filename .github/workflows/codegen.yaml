@@ -16,7 +16,7 @@ jobs:
         with:
           persist-credentials: false
       - id: go-version
-        uses: opendefensecloud/dev-kit/.github/actions/get-go-version@983ddfc02224cbb84e8fdf875683525881b96a72 # v4.0.0
+        uses: opendefensecloud/dev-kit/.github/actions/get-go-version@66e0c82ff85c5c73a090c5743ed1573629053c5c # v5.1.0
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ steps.go-version.outputs.version }}
@@ -24,4 +24,4 @@ jobs:
         run: |
           make generate manifests
       - name: Check for changes
-        uses: opendefensecloud/dev-kit/.github/actions/diff-check@983ddfc02224cbb84e8fdf875683525881b96a72 # v4.0.0
+        uses: opendefensecloud/dev-kit/.github/actions/diff-check@66e0c82ff85c5c73a090c5743ed1573629053c5c # v5.1.0
