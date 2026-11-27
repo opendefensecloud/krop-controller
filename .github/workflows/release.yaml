@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -43,7 +43,7 @@ jobs:
           echo "version=$GO_VERSION" >> $GITHUB_OUTPUT
 
       - name: Setup Go
-        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: ${{ steps.get-go-version.outputs.version }}
           # This job publishes; a poisoned build cache would end up in the
@@ -73,7 +73,7 @@ jobs:
       - name: Attest build provenance
         # actions/attest defaults to SLSA build provenance when no sbom-path or
         # predicate input is given.
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: 'bin/krop-controller-*' # binaries only; runs before signing so bundles are not yet present
 
