@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -43,7 +43,7 @@ jobs:
           echo "version=$GO_VERSION" >> $GITHUB_OUTPUT
 
       - name: Setup Go
-        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: ${{ steps.get-go-version.outputs.version }}
           # This job publishes; a poisoned build cache would end up in the
@@ -73,7 +73,7 @@ jobs:
       - name: Attest build provenance
         # actions/attest defaults to SLSA build provenance when no sbom-path or
         # predicate input is given.
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: 'bin/krop-controller-*' # binaries only; runs before signing so bundles are not yet present
 
@@ -105,14 +105,22 @@ jobs:
               "$f"
           done
 
+      # Immutable releases forbid uploading assets to an already-published
+      # release, so create a draft with the signed artefacts attached and
+      # publish it separately (UI, or `gh release edit <tag> --draft=false`).
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
-        with:
-          files: |
-            bin/*
-          generate_release_notes: true
-          # Immutable releases forbid uploading assets to an already-published
-          # release, so create a draft with the signed artefacts attached and
-          # publish it separately (UI, or `gh release edit <tag> --draft=false`).
-          draft: true
-          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          prerelease=()
+          case "$TAG" in *alpha*|*beta*|*rc*) prerelease=(--prerelease) ;; esac
+          # Re-runs land on the existing draft; uploading to a draft is still
+          # allowed, only published releases are immutable.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" bin/* --clobber
+          else
+            gh release create "$TAG" bin/* --draft --generate-notes "${prerelease[@]}"
+          fi
